@@ -1,0 +1,6 @@
+# 原始碼統一用 LF，避免每次 commit 都跳一排 LF/CRLF 警告
+* text=auto eol=lf
+
+# Windows 批次檔必須是 CRLF，否則 cmd 執行會出問題
+*.bat text eol=crlf
+*.cmd text eol=crlf

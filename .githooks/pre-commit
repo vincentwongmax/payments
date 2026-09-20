@@ -1,0 +1,12 @@
+#!/bin/sh
+# commit 前先跑一次邏輯自我檢查，沒通過就擋下來。
+# 啟用方式：git config core.hooksPath .githooks
+
+# 沒有 node 就放行，不要讓環境問題擋住所有 commit
+command -v node >/dev/null 2>&1 || exit 0
+
+if ! node test/run.js; then
+  echo ""
+  echo "自我檢查沒有通過，已取消這次 commit。"
+  exit 1
+fi

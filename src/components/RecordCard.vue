@@ -1,0 +1,709 @@
+<script setup>
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import flatpickr from 'flatpickr'
+import 'flatpickr/dist/flatpickr.min.css'
+import { Mandarin } from 'flatpickr/dist/l10n/zh.js'
+
+const props = defineProps({
+  record: { type: Object, required: true },
+  persons: { type: Array, default: () => [] },
+  indexLabel: { type: String, default: '' },
+})
+const emit = defineEmits(['view', 'remove', 'retry', 'skip', 'rename-source', 'attach'])
+
+const r = computed(() => props.record)
+
+/* 手動新增的記錄補圖片用 */
+const pickEl = ref(null)
+function onPickFile(event) {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  if (file) emit('attach', props.record, file)
+}
+
+/*
+ * 付款時間：**一個輸入框，兩段式選擇**
+ *   1. 點欄位 → 跳 flatpickr 日曆選「日期」
+ *   2. 選完日期 → 同一個位置換成瀏覽器原生的「時間」選擇器
+ *      （iPhone 上是內建的時／分滾輪，不用按小箭頭，比較好操作）
+ * 兩段都選完就合併成 "YYYY-MM-DD HH:mm"，也可以直接打字。
+ */
+const dateInputEl = ref(null) // 可見的文字欄位（平常顯示完整日期時間）
+const timeStepEl = ref(null) // 第二段：原生時間選擇器
+const dateAnchorEl = ref(null) // flatpickr 的掛載點（不可見）
+const step = ref('idle') // idle | time
+let datePicker = null
+
+const pad2 = (n) => String(n).padStart(2, '0')
+const todayString = () => {
+  const d = new Date()
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+}
+
+const dateValue = computed(() => String(r.value.paidAtText ?? '').slice(0, 10))
+const clockValue = computed(() => {
+  const t = String(r.value.paidAtText ?? '').slice(11, 16)
+  return /^\d{2}:\d{2}$/.test(t) ? t : ''
+})
+const paidAtDisplay = computed(() =>
+  dateValue.value ? `${dateValue.value}${clockValue.value ? ` ${clockValue.value}` : ''}` : '',
+)
+
+function writePaidAt(date, time) {
+  r.value.paidAtText = `${date || todayString()} ${time || '00:00'}`
+  r.value.paidAtManual = true
+}
+
+/* 平常可以直接打字（打 "2026-09-15 18:30" 這種格式） */
+function onTypePaidAt(event) {
+  r.value.paidAtText = event.target.value
+  r.value.paidAtManual = true
+}
+
+/* 第一段：按右邊的日曆圖示才會打開（點輸入框只聚焦，方便直接打字） */
+function openDateStep() {
+  if (step.value !== 'idle') return
+  datePicker?.open()
+}
+
+/* 第二段：日期選好後，換成原生時間選擇器並自動聚焦（使用者剛點過，iOS 會跳滾輪） */
+function startTimeStep(date) {
+  datePicker?.close()
+  writePaidAt(date, clockValue.value || '12:00')
+  step.value = 'time'
+  nextTick(() => {
+    timeStepEl.value?.focus()
+    timeStepEl.value?.click?.()
+  })
+}
+
+/* 調整時間時先記下來就好，要按「完成」（或在手機上收起滾輪）才回到原本的欄位 */
+function onTimeChanged(event) {
+  writePaidAt(dateValue.value, event.target.value)
+}
+
+const finishTimeStep = () => {
+  /* 保險：有些瀏覽器 blur 早於 change，這裡再讀一次值寫回去 */
+  const value = timeStepEl.value?.value
+  if (value) writePaidAt(dateValue.value, value)
+  step.value = 'idle'
+}
+
+onMounted(() => {
+  if (!dateAnchorEl.value) return
+  /* 只把合法的日期交給 flatpickr（壞值會讓它丟錯，整張卡片就壞了） */
+  const initial = /^\d{4}-\d{2}-\d{2}$/.test(dateValue.value) ? dateValue.value : undefined
+  try {
+    datePicker = flatpickr(dateAnchorEl.value, {
+      dateFormat: 'Y-m-d',
+      allowInput: true,
+      locale: Mandarin,
+      disableMobile: true, // 一律用 flatpickr 的日曆（手機上也一樣）
+      showArrow: false, // 置中顯示，箭頭會對不上位置
+      /* 置中由 style.css 的全域規則負責（一開始就固定在正中間，
+         不會先出現在輸入框下方再跳回中間），這裡也不需要開場動畫 */
+      animate: false,
+      defaultDate: initial,
+      onChange: (_dates, text) => {
+        if (text) startTimeStep(text)
+      },
+    })
+  } catch (e) {
+    /* 日曆壞掉不該讓整張卡片（甚至整個清單）停止更新 */
+    datePicker = null
+    console.warn('flatpickr 初始化失敗：', e)
+  }
+})
+
+onBeforeUnmount(() => {
+  datePicker?.destroy()
+  datePicker = null
+})
+
+/* 辨識完成後程式會自己填時間，這裡要把日曆同步過去 */
+watch(dateValue, (next) => {
+  if (!datePicker) return
+  if (next === datePicker.input.value) return
+  datePicker.setDate(next || null, false)
+})
+
+const amountText = (a) => `${a.currency || '未標示'} ${a.value}`
+
+function statusText(rec) {
+  if (rec.ocrStatus === 'running') return rec.ocrProgress ? `辨識中 ${rec.ocrProgress}%` : '辨識中'
+  if (rec.ocrStatus === 'error') return '辨識失敗'
+  if (rec.ocrStatus === 'none') return '手動新增'
+  if (rec.ocrStatus === 'skipped') return '已跳過辨識'
+  if (rec.ocrStatus !== 'done') return '等待辨識'
+
+  const hasAmount = (rec.amounts?.length ?? 0) > 0
+  const hasTime = !!rec.paidAtText
+  if (hasAmount && hasTime) return '已辨識'
+  if (hasAmount) return '只讀到金額'
+  if (hasTime) return '只讀到時間'
+  return '沒抓到，請手動填'
+}
+
+const statusKind = (rec) => {
+  if (rec.ocrStatus === 'error') return 'error'
+  if (rec.ocrStatus === 'none' || rec.ocrStatus === 'skipped') return 'idle'
+  if (rec.ocrStatus !== 'done') return 'idle'
+  return (rec.amounts?.length ?? 0) > 0 && rec.paidAtText ? 'done' : 'warn'
+}
+
+/* 失敗或已跳過的，可以點標籤重新辨識 */
+const canRetry = (rec) => rec.ocrStatus === 'error' || rec.ocrStatus === 'skipped'
+
+const allSelected = computed(
+  () =>
+    props.persons.length > 0 &&
+    props.persons.every((p) => r.value.beneficiaryIds.includes(p.id)),
+)
+
+function toggleAllBeneficiaries() {
+  r.value.beneficiaryIds = allSelected.value ? [] : props.persons.map((p) => p.id)
+}
+
+function chooseAmount(a) {
+  r.value.currency = a.currency
+  r.value.amount = String(a.value)
+  r.value.currencyLocked = true
+}
+
+function toggleBeneficiary(id) {
+  const list = r.value.beneficiaryIds
+  const at = list.indexOf(id)
+  if (at < 0) list.push(id)
+  else list.splice(at, 1)
+}
+</script>
+
+<template>
+  <article class="rec">
+    <div class="thumbs">
+      <button
+        v-if="r.url"
+        type="button"
+        class="thumb thumb-third thumb-btn"
+        title="點圖放大（上方 1/3）"
+        :aria-label="`放大檢視 ${r.fileName}（上方 1/3）`"
+        :style="{ backgroundImage: `url(${r.url})` }"
+        @click="emit('view', r)"
+      />
+      <button v-if="r.url" type="button" class="thumb-btn" title="點圖放大" @click="emit('view', r)">
+        <img class="thumb" :src="r.url" :alt="r.fileName" />
+      </button>
+      <!-- 沒有圖片時，點這格就能補一張圖上去 -->
+      <button
+        v-else
+        type="button"
+        class="thumb thumb-empty"
+        title="點一下上傳這筆的圖片"
+        @click="pickEl.click()"
+      >
+        無圖
+      </button>
+      <input
+        ref="pickEl"
+        class="sr-only"
+        type="file"
+        accept="image/*"
+        @change="onPickFile"
+      />
+    </div>
+
+    <div class="body">
+      <div class="top">
+        <span class="file" :title="r.fileName">{{ r.fileName }}</span>
+        <button
+          type="button"
+          class="badge"
+          :class="[`badge-${statusKind(r)}`, { 'badge-tap': canRetry(r) }]"
+          :disabled="!canRetry(r)"
+          :title="canRetry(r) ? '點一下重新辨識' : ''"
+          @click="canRetry(r) && emit('retry', r)"
+        >
+          {{ statusText(r) }}
+        </button>
+        <span class="spacer" />
+        <!-- 辨識中／等待辨識：可以只跳過這一張（要重新辨識就點上面的標籤） -->
+        <button
+          v-if="r.ocrStatus === 'running' || r.ocrStatus === 'pending'"
+          class="btn btn-icon"
+          title="這張不要辨識（圖與其他欄位都留著）"
+          @click="emit('skip', r)"
+        >
+          跳過
+        </button>
+        <button v-if="r.url" class="btn btn-icon" @click="emit('view', r)">圖片</button>
+        <button class="btn btn-icon btn-danger" @click="emit('remove', r)">刪除</button>
+        <button
+          type="button"
+          class="seq"
+          :title="`來源：${r.source || '本機'}｜點一下可重新命名`"
+          @click="emit('rename-source', r.source || '本機')"
+        >
+          {{ indexLabel }}
+        </button>
+      </div>
+
+      <div class="grid">
+        <label class="field">
+          <span class="lbl">付錢人</span>
+          <select v-model="r.payerId" class="input" :disabled="!persons.length">
+            <option value="">{{ persons.length ? '請選擇' : '請先新增人物' }}</option>
+            <option v-for="p in persons" :key="p.id" :value="p.id">
+              {{ p.name }}{{ p.isSelf ? '（自己）' : '' }}
+            </option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span class="lbl">付款時間</span>
+          <span class="time-slot">
+            <input
+              v-if="step === 'idle'"
+              ref="dateInputEl"
+              class="input time-input"
+              placeholder="YYYY-MM-DD HH:mm"
+              :value="paidAtDisplay"
+              @input="onTypePaidAt"
+            />
+            <!-- 第二段：同一個位置換成原生時間選擇器（iPhone 是滾輪） -->
+            <input
+              v-else
+              ref="timeStepEl"
+              class="input time-input time-input-ok"
+              type="time"
+              aria-label="選時間"
+              :value="clockValue || '12:00'"
+              @change="onTimeChanged"
+              @input="onTimeChanged"
+              @blur="finishTimeStep"
+            />
+            <!-- 調整完時間要按「完成」才收起（手機上收起滾輪也等於完成） -->
+            <button
+              v-if="step === 'time'"
+              type="button"
+              class="time-ok-btn"
+              @click="finishTimeStep"
+            >
+              完成
+            </button>
+            <!-- 只有按這個日曆按鈕才會打開選擇器 -->
+            <button
+              v-if="step === 'idle'"
+              type="button"
+              class="time-pick-btn"
+              title="選日期與時間"
+              aria-label="選日期與時間"
+              @click="openDateStep"
+            >
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <rect x="3" y="5" width="18" height="16" rx="2" />
+                <path d="M3 10h18M8 3v4M16 3v4" />
+              </svg>
+            </button>
+            <!-- flatpickr 的掛載點（看不見，只負責跳日曆） -->
+            <input ref="dateAnchorEl" class="sr-only" type="text" tabindex="-1" aria-hidden="true" />
+          </span>
+        </label>
+
+        <label class="field">
+          <span class="lbl">付款多少錢{{ r.currency ? `（${r.currency}）` : '' }}</span>
+          <input
+            v-model="r.amount"
+            class="input amount"
+            inputmode="decimal"
+            placeholder="0.00"
+          />
+        </label>
+
+        <label class="field">
+          <span class="lbl">備注</span>
+          <input v-model="r.note" class="input" placeholder="例如：公司聚餐" />
+        </label>
+      </div>
+
+      <div class="field">
+        <span class="lbl">受益人（可多選）</span>
+        <div v-if="persons.length" class="chips">
+          <button
+            type="button"
+            class="chip chip-all"
+            :class="{ on: allSelected }"
+            @click="toggleAllBeneficiaries"
+          >
+            {{ allSelected ? '取消全選' : '全選' }}
+          </button>
+          <button
+            v-for="p in persons"
+            :key="p.id"
+            type="button"
+            class="chip"
+            :class="{ on: r.beneficiaryIds.includes(p.id) }"
+            @click="toggleBeneficiary(p.id)"
+          >
+            {{ p.name }}
+          </button>
+        </div>
+        <p v-else class="hint">還沒有可選的人物。</p>
+      </div>
+
+      <div v-if="r.amounts?.length > 1" class="field">
+        <span class="lbl">這張圖有多個金額，用哪一個？</span>
+        <div class="chips">
+          <button
+            v-for="a in r.amounts"
+            :key="`${a.currency}:${a.value}`"
+            type="button"
+            class="chip"
+            :class="{ on: r.currency === a.currency && Number(r.amount) === a.value }"
+            @click="chooseAmount(a)"
+          >
+            {{ amountText(a) }}
+          </button>
+        </div>
+      </div>
+
+      <p v-if="r.ocrError" class="err">{{ r.ocrError }}</p>
+    </div>
+  </article>
+</template>
+
+<style scoped>
+.rec {
+  display: grid;
+  grid-template-columns: 104px 1fr;
+  gap: 14px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.16s, box-shadow 0.16s;
+}
+
+.seq {
+  flex: none;
+  padding: 3px 9px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.seq:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.rec:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow);
+}
+
+.thumb-btn {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+}
+
+.thumbs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 只顯示圖片上方 1/3 的縮圖，手機才有（.thumb.thumb-third 是為了蓋過上面的 .thumb） */
+.thumb.thumb-third {
+  display: none;
+}
+
+.thumb {
+  display: block;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: #eceee9;
+  object-fit: cover;
+}
+
+.thumb-empty {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-style: dashed;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.thumb-empty:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 32px;
+}
+
+.amount {
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.file {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.badge {
+  flex: none;
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 999px;
+  background: #eef0ec;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  /* 標籤本身是 button（可點的那兩種狀態），這裡把按鈕預設外觀清掉 */
+  cursor: default;
+  appearance: none;
+}
+
+/* 失敗／已跳過：點標籤就重新辨識 */
+.badge-tap {
+  cursor: pointer;
+}
+
+.badge-tap:hover {
+  filter: brightness(0.96);
+  text-decoration: underline dotted;
+}
+
+.badge-done {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.badge-warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.badge-error {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.lbl {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+/* 付款時間：一個欄位（兩段式選擇，日期→時間）＋右邊的日曆按鈕 */
+.time-slot {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+
+.time-input {
+  width: 100%;
+  padding-right: 40px;
+  cursor: text;
+}
+
+.time-pick-btn {
+  position: absolute;
+  top: 50%;
+  right: 5px;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+/* 第二段的「完成」按鈕：按了才回到原本的欄位 */
+.time-input-ok {
+  padding-right: 66px;
+}
+
+.time-ok-btn {
+  position: absolute;
+  top: 50%;
+  right: 5px;
+  transform: translateY(-50%);
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.time-ok-btn:hover {
+  background: var(--accent-soft);
+}
+
+.time-pick-btn:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* 日曆置中顯示時，背景加一層薄薄的遮罩讓它更好點 */
+.flatpickr-calendar {
+  z-index: 60;
+  box-shadow: 0 12px 40px -8px rgba(26, 30, 24, 0.3);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip {
+  min-height: 32px;
+  padding: 0 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.chip.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* 「全選」是動作不是人名，用霧玫瑰色跟人物選項區分 */
+.chip-all {
+  border-style: dashed;
+  border-color: var(--rose-line);
+  background: var(--surface);
+  color: var(--rose);
+  font-weight: 650;
+}
+
+.chip-all:hover {
+  border-color: var(--rose);
+  background: var(--rose-soft);
+}
+
+.chip-all.on {
+  border-style: solid;
+  border-color: var(--rose);
+  background: var(--rose-soft);
+  color: var(--rose);
+}
+
+@media (max-width: 560px) {
+  .rec {
+    grid-template-columns: 68px 1fr;
+    gap: 10px;
+    /* 縮圖垂直置中 */
+    align-items: center;
+  }
+
+  /* iOS 對字級小於 16px 的輸入框會在對焦時把整頁放大 */
+  .time-input {
+    font-size: 16px;
+  }
+
+  /* 手機截圖是 9:19 左右的長條，用 contain 才不會被裁掉一大塊 */
+  .thumb {
+    aspect-ratio: 9 / 19;
+    object-fit: contain;
+  }
+
+  /* 上方 1/3 的縮圖：跟完整縮圖一樣大，內容只取圖片上方 1/3（等於放大 3 倍） */
+  .thumb.thumb-third {
+    display: block;
+    aspect-ratio: 9 / 19;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background-color: #eceee9;
+    background-repeat: no-repeat;
+    background-position: top center;
+    background-size: auto 300%;
+  }
+
+  .seq {
+    font-size: 10px;
+  }
+
+  .top {
+    flex-wrap: wrap;
+  }
+
+  .file {
+    flex: 1 0 100%;
+  }
+}
+</style>

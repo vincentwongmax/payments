@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.npm-cache/
+*.local
+.DS_Store
+npm-debug.log*
+
+# 使用者自己的付款截圖：絕對不要進版控
+付款記錄/
+圖片/
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.heic
