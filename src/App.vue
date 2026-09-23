@@ -20,6 +20,7 @@ const err = ref('')
 
 function openCreatePerson() {
   draft.value = { id: null, name: '', isSelf: persons.value.length === 0, aliasesText: '' }
+  mergeTargetId.value = ''
   err.value = ''
   nextTick(() => personDialogEl.value.showModal())
 }
@@ -31,8 +32,20 @@ function openEditPerson(person) {
     isSelf: person.isSelf,
     aliasesText: (person.aliases ?? []).join('、'),
   }
+  mergeTargetId.value = ''
   err.value = ''
   nextTick(() => personDialogEl.value.showModal())
+}
+
+/** 這個人物被記錄用到的次數，分開算付款人與受益人 */
+function personUsage(id) {
+  let payer = 0
+  let beneficiary = 0
+  for (const r of records.value) {
+    if (r.payerId === id) payer++
+    if ((r.beneficiaryIds ?? []).includes(id)) beneficiary++
+  }
+  return { payer, beneficiary }
 }
 
 function parseAliases(text) {
@@ -219,19 +232,22 @@ function onSelfDialogClose() {
   backupNotice.value = '已取消：請先設定誰是「自己」'
 }
 
-/* ---------- 合併重複的人物 ---------- */
-const mergeDialogEl = ref(null)
-const mergeDraft = ref({ source: null, targetId: '' })
+/* ---------- 合併重複的人物（放在「修改人物」的視窗裡） ---------- */
+const mergeTargetId = ref('')
+const otherPersons = computed(() => persons.value.filter((p) => p.id !== draft.value.id))
 
-function openMergePerson(person) {
-  mergeDraft.value = { source: person, targetId: '' }
-  nextTick(() => mergeDialogEl.value.showModal())
-}
-
-function confirmMerge() {
-  const { source, targetId } = mergeDraft.value
-  const target = persons.value.find((p) => p.id === targetId)
+/** 把正在修改的這個人合併到選好的另一個人 */
+function mergeInto() {
+  const source = persons.value.find((p) => p.id === draft.value.id)
+  const target = persons.value.find((p) => p.id === mergeTargetId.value)
   if (!source || !target) return
+
+  const ok = confirm(
+    `確定要把「${source.name}」合併到「${target.name}」嗎？\n\n` +
+      `記錄裡的付款人與受益人都會改成「${target.name}」，` +
+      `「${source.name}」會變成別名，之後匯入同樣的寫法會自動對上。`,
+  )
+  if (!ok) return
 
   records.value.forEach((r) => {
     if (r.payerId === source.id) r.payerId = target.id
@@ -244,7 +260,7 @@ function confirmMerge() {
   if (source.isSelf) target.isSelf = true
   persons.value = persons.value.filter((p) => p.id !== source.id)
 
-  mergeDialogEl.value.close()
+  personDialogEl.value.close()
   backupNotice.value = `已把「${source.name}」合併到「${target.name}」`
 }
 
@@ -1637,16 +1653,13 @@ onUnmounted(() => {
           <span class="avatar" aria-hidden="true">{{ p.name.slice(0, 1) }}</span>
           <span class="person-name">{{ p.name }}</span>
           <span v-if="p.isSelf" class="tag">自己</span>
-          <span v-if="usedCount(p)" class="tag tag-used" :title="`有 ${usedCount(p)} 筆記錄用到，不能刪除`">
+          <span v-if="usedCount(p)" class="tag tag-used" :title="`付款人 ${personUsage(p.id).payer} 筆、受益人 ${personUsage(p.id).beneficiary} 筆，不能刪除`">
             {{ usedCount(p) }} 筆
           </span>
           <span v-if="p.aliases?.length" class="aliases" :title="p.aliases.join('、')">
             別名 {{ p.aliases.join('、') }}
           </span>
           <span class="spacer" />
-          <button v-if="persons.length > 1" class="btn btn-icon" @click="openMergePerson(p)">
-            合併
-          </button>
           <button class="btn btn-icon" @click="openEditPerson(p)">修改</button>
           <button class="btn btn-icon btn-danger" @click="removePerson(p)">刪除</button>
         </li>
@@ -1763,37 +1776,6 @@ onUnmounted(() => {
       </form>
     </dialog>
 
-    <dialog ref="mergeDialogEl" class="dialog">
-      <form @submit.prevent="confirmMerge">
-        <h3 class="dialog-head">合併人物</h3>
-        <div class="dialog-body">
-          <p class="hint">
-            把「{{ mergeDraft.source?.name }}」合併到另一位人物。記錄裡的付錢人與受益人都會一起改過去，
-            原來的名字會變成別名，之後匯入同樣的寫法會自動對上。
-          </p>
-          <div class="field">
-            <label for="merge-target">合併到</label>
-            <select id="merge-target" v-model="mergeDraft.targetId" class="input">
-              <option value="" disabled>請選擇</option>
-              <option
-                v-for="p in persons.filter((x) => x.id !== mergeDraft.source?.id)"
-                :key="p.id"
-                :value="p.id"
-              >
-                {{ p.name }}{{ p.isSelf ? '（自己）' : '' }}
-              </option>
-            </select>
-          </div>
-        </div>
-        <div class="dialog-foot">
-          <button type="button" class="btn" @click="mergeDialogEl.close()">取消</button>
-          <button type="submit" class="btn btn-primary" :disabled="!mergeDraft.targetId">
-            合併
-          </button>
-        </div>
-      </form>
-    </dialog>
-
     <!-- 剪貼簿讀不到圖時彈出來請使用者長按貼上（iPhone Safari）。刻意不自動對焦 -->
     <dialog ref="pasteDialogEl" class="dialog paste-dialog">
       <h3 class="dialog-head">貼上圖片</h3>
@@ -1881,6 +1863,12 @@ onUnmounted(() => {
       <form @submit.prevent="savePerson">
         <h3 class="dialog-head">{{ draft.id ? '修改人物' : '新增人物' }}</h3>
         <div class="dialog-body">
+          <p v-if="draft.id" class="usage-line">
+            記錄使用：
+            <strong>付款人 {{ personUsage(draft.id).payer }} 筆</strong>
+            <span class="sep">·</span>
+            <strong>受益人 {{ personUsage(draft.id).beneficiary }} 筆</strong>
+          </p>
           <div class="field">
             <label for="person-name">名稱</label>
             <input
@@ -1907,6 +1895,32 @@ onUnmounted(() => {
             <span class="hint">匯入時遇到這些寫法，會自動對到這個人。</span>
           </div>
           <p v-if="err" class="err">{{ err }}</p>
+
+          <!-- 合併：把這個人併到另一位（記錄會一起改過去） -->
+          <div v-if="draft.id && otherPersons.length" class="merge-box">
+            <h4 class="merge-title">合併到另一位人物</h4>
+            <p class="hint">
+              記錄裡的付款人與受益人都會改成對方，「{{ draft.name }}」會變成別名，
+              之後匯入同樣的寫法也會自動對上。
+            </p>
+            <div class="merge-row">
+              <select v-model="mergeTargetId" class="input" aria-label="合併到">
+                <option value="">請選擇要合併到誰</option>
+                <option v-for="p in otherPersons" :key="p.id" :value="p.id">
+                  {{ p.name }}{{ p.isSelf ? '（自己）' : '' }}
+                </option>
+              </select>
+              <button
+                type="button"
+                class="btn btn-danger"
+                :class="{ 'is-busy': !mergeTargetId }"
+                :aria-disabled="!mergeTargetId"
+                @click="mergeInto"
+              >
+                合併
+              </button>
+            </div>
+          </div>
         </div>
         <div class="dialog-foot">
           <button type="button" class="btn" @click="personDialogEl.close()">取消</button>

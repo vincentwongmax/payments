@@ -267,6 +267,58 @@ select.input {
   accent-color: var(--accent);
 }
 
+/* 修改人物：記錄使用次數（付款人／受益人分開算） */
+.usage-line {
+  margin: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.usage-line strong {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-line .sep {
+  margin: 0 6px;
+  opacity: 0.6;
+}
+
+/* 修改人物：合併到另一位 */
+.merge-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.merge-title {
+  margin: 0;
+  font-size: 14px;
+}
+
+.merge-box .hint {
+  margin: 0;
+}
+
+.merge-row {
+  display: flex;
+  gap: 8px;
+}
+
+.merge-row .input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 /* ---------- 其他 ---------- */
 .err {
   margin: 0;
