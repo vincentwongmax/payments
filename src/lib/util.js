@@ -55,7 +55,7 @@ export function labelBySource(records, defaultSource = '本機') {
 
 /**
  * 解析分享連結的參數，例如：
- *   /?persons=Vincent,Ben,Ken&currency=CNY
+ *   /?persons=Vincent,Ben,Ken&currency=CNY&notes=吃_早餐,打車(去程)
  * 名稱接受逗號、中文逗號、頓號分隔；順手擋掉控制字元與過長的輸入。
  */
 export function parseShareParams(search) {
@@ -79,7 +79,21 @@ export function parseShareParams(search) {
   }
 
   const currency = (params.get('currency') ?? '').trim().toUpperCase()
-  return { names, currency: /^[A-Z]{3}$/.test(currency) ? currency : '' }
+
+  /* 備注分類：允許空白與各種括號，所以只清掉控制字元與前後空白 */
+  const noteSeen = new Set()
+  const notes = []
+  for (const part of (params.get('notes') ?? '').split(/[,，、;；]/)) {
+    const note = part.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 40)
+    if (!note) continue
+    const key = note.toLowerCase()
+    if (noteSeen.has(key)) continue
+    noteSeen.add(key)
+    notes.push(note)
+    if (notes.length >= 60) break
+  }
+
+  return { names, currency: /^[A-Z]{3}$/.test(currency) ? currency : '', notes }
 }
 
 /**

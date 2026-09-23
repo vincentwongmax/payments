@@ -7,9 +7,10 @@ import { Mandarin } from 'flatpickr/dist/l10n/zh.js'
 const props = defineProps({
   record: { type: Object, required: true },
   persons: { type: Array, default: () => [] },
+  noteCategories: { type: Array, default: () => [] },
   indexLabel: { type: String, default: '' },
 })
-const emit = defineEmits(['view', 'remove', 'retry', 'skip', 'rename-source', 'attach'])
+const emit = defineEmits(['view', 'remove', 'retry', 'skip', 'rename-source', 'pick-note', 'save-note', 'attach'])
 
 const r = computed(() => props.record)
 
@@ -329,10 +330,30 @@ function toggleBeneficiary(id) {
           />
         </label>
 
-        <label class="field">
+        <div class="field note-field">
           <span class="lbl">備注</span>
-          <input v-model="r.note" class="input" placeholder="例如：公司聚餐" />
-        </label>
+          <div class="note-row">
+            <input v-model="r.note" class="input" placeholder="例如：公司聚餐" />
+            <button
+              type="button"
+              class="btn btn-icon"
+              title="從常用分類挑一個"
+              @click="emit('pick-note', r)"
+            >
+              分類
+            </button>
+            <button
+              type="button"
+              class="btn btn-icon"
+              :class="{ 'is-busy': !r.note.trim() }"
+              :aria-disabled="!r.note.trim()"
+              title="把現在的備注存成常用分類"
+              @click="emit('save-note', r.note)"
+            >
+              ＋ 常用
+            </button>
+          </div>
+        </div>
       </div>
 
       <div class="field">
@@ -565,6 +586,27 @@ function toggleBeneficiary(id) {
   font-weight: 550;
 }
 
+/* 備注：輸入框 + 「分類」 + 「＋ 常用」 */
+.note-field {
+  /* 佔兩欄，輸入框才不會被兩顆按鈕擠得太窄 */
+  grid-column: span 2;
+}
+
+.note-row {
+  display: flex;
+  gap: 8px;
+}
+
+.note-row .input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.note-row .btn {
+  flex: 0 0 auto;
+  padding: 0 10px;
+}
+
 /* 付款時間：一個欄位（兩段式選擇，日期→時間）＋右邊的日曆按鈕 */
 .time-slot {
   position: relative;
@@ -682,6 +724,22 @@ function toggleBeneficiary(id) {
     gap: 10px;
     /* 縮圖垂直置中 */
     align-items: center;
+  }
+
+  /*
+   * 手機上卡片內文只有 200 多 px，備注的輸入框跟兩顆按鈕擠在同一行會太窄，
+   * 所以讓它換行：輸入框自己一行，兩顆按鈕平分下面那行（也比較好按）。
+   */
+  .note-row {
+    flex-wrap: wrap;
+  }
+
+  .note-row .input {
+    flex: 1 1 100%;
+  }
+
+  .note-row .btn {
+    flex: 1 1 0;
   }
 
   /* iOS 對字級小於 16px 的輸入框會在對焦時把整頁放大 */

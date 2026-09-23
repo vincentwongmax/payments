@@ -19,6 +19,13 @@ import {
 } from '../src/lib/ocr.js'
 import { labelBySource, parseShareParams, safeFileNamePart, searchFromText, shareLinkKey } from '../src/lib/util.js'
 import {
+  DEFAULT_NOTE_CATEGORIES,
+  keepNoteCategories,
+  noteKey,
+  normalizeNoteCategories,
+  seedNoteCategories,
+} from '../src/lib/notes.js'
+import {
   missingPersonIds,
   personNameSnapshot,
   recordsUsingPerson,
@@ -491,7 +498,16 @@ await assert.rejects(() => fromBackup(null, decode), /不是本程式/)
 assert.deepEqual(parseShareParams('?persons=Vincent,Ben,Ken&currency=CNY'), {
   names: ['Vincent', 'Ben', 'Ken'],
   currency: 'CNY',
+  notes: [],
 })
+/* 備注分類也可以從連結帶進來（空白、括號都要保留） */
+assert.deepEqual(parseShareParams('?notes=吃_早餐,租車_高速費(去程),飲_廢水( )').notes, [
+  '吃_早餐',
+  '租車_高速費(去程)',
+  '飲_廢水( )',
+])
+assert.deepEqual(parseShareParams('?notes=吃_早餐,吃_早餐').notes, ['吃_早餐'], '重複只留一個')
+assert.deepEqual(parseShareParams('?notes=a、b；c').notes, ['a', 'b', 'c'], '中文分隔號也要能用')
 /* 中文逗號、頓號、分號都要能分隔；空白要去掉 */
 assert.deepEqual(parseShareParams('?persons=%E9%99%B3%E5%A4%A7%E6%96%87%E3%80%81Ben%3BKen').names, [
   '陳大文',
@@ -505,8 +521,8 @@ assert.equal(parseShareParams('?currency=cny').currency, 'CNY')
 assert.equal(parseShareParams('?currency=人民幣').currency, '')
 assert.equal(parseShareParams('?currency=ABCD').currency, '')
 /* 沒有參數、空字串都不該出錯 */
-assert.deepEqual(parseShareParams(''), { names: [], currency: '' })
-assert.deepEqual(parseShareParams('?foo=bar'), { names: [], currency: '' })
+assert.deepEqual(parseShareParams(''), { names: [], currency: '', notes: [] })
+assert.deepEqual(parseShareParams('?foo=bar'), { names: [], currency: '', notes: [] })
 assert.deepEqual(parseShareParams('?persons=,,, ,').names, [])
 /* 數量與長度要設上限，避免有人用超長網址灌爆資料 */
 assert.equal(parseShareParams(`?persons=${Array.from({ length: 50 }, (_, i) => `n${i}`).join(',')}`).names.length, 30)
@@ -694,7 +710,48 @@ assert.equal(searchFromText(''), '')
 assert.deepEqual(parseShareParams(searchFromText('x.com/?persons=Vincent,Ben&currency=CNY')), {
   names: ['Vincent', 'Ben'],
   currency: 'CNY',
+  notes: [],
 })
+
+/* ---------- 備注分類 ---------- */
+assert.ok(DEFAULT_NOTE_CATEGORIES.includes('吃_早餐'))
+assert.ok(DEFAULT_NOTE_CATEGORIES.includes('飲_廢水( )'), '空白括號要原樣保留')
+assert.equal(DEFAULT_NOTE_CATEGORIES.length, 10)
+assert.deepEqual(
+  seedNoteCategories().slice(0, 3).map((c) => c.text),
+  ['吃_早餐', '吃_午餐', '吃_晚餐'],
+)
+assert.ok(seedNoteCategories().every((c) => c.link === false), '預設的不是從連結來的')
+
+/* 去重（忽略大小寫與前後空白）、空的丟掉、連結標記要保留 */
+const mergedNotes = normalizeNoteCategories([
+  '吃_早餐',
+  { text: ' 吃_早餐 ', link: true },
+  { text: '打車(去程)', link: true },
+  { text: '   ' },
+  'AB',
+  'ab',
+])
+assert.deepEqual(
+  mergedNotes.map((c) => c.text),
+  ['吃_早餐', '打車(去程)', 'AB'],
+)
+assert.equal(mergedNotes[0].link, true, '同一個分類只要有一個來自連結就標成連結')
+
+/* 重置時：沒勾就只留連結來的；有勾就全留 */
+const list = normalizeNoteCategories([
+  { text: '內建', link: false },
+  { text: '連結來的', link: true },
+])
+assert.deepEqual(
+  keepNoteCategories(list, false).map((c) => c.text),
+  ['連結來的'],
+)
+assert.deepEqual(
+  keepNoteCategories(list, true).map((c) => c.text),
+  ['內建', '連結來的'],
+)
+assert.equal(noteKey('  吃_早餐  '), '吃_早餐')
 
 /* ---------- PWA：離線可用需要的檔案 ---------- */
 const root = new URL('..', import.meta.url)

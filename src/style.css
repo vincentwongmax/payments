@@ -378,6 +378,69 @@ select.input {
   touch-action: manipulation;
 }
 
+/* SweetAlert2 裡的「挑一個」清單（備注分類） */
+.pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 52vh;
+  overflow: auto;
+  margin-top: 4px;
+}
+
+.pick-item {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.pick-item:hover {
+  border-color: var(--muted);
+  background: var(--surface-2);
+}
+
+.pick-item:active {
+  transform: translateY(1px);
+}
+
+/* SweetAlert2 裡的勾選清單（重置時要保留什麼） */
+.keep-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+  text-align: left;
+}
+
+.keep-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.keep-item input {
+  width: 17px;
+  height: 17px;
+  accent-color: var(--accent);
+}
+
+.keep-note {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: left;
+}
+
 /* ---------- 其他 ---------- */
 .err {
   margin: 0;

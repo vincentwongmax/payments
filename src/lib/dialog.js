@@ -46,3 +46,70 @@ export const askText = ({ title, text = '', value = '', placeholder = '', confir
     confirmButtonText: confirmText,
     cancelButtonText: '取消',
   }).then((result) => (result.isConfirmed ? String(result.value ?? '') : null))
+
+/**
+ * 勾選清單（例如重置時選擇要保留什麼）。
+ * 回傳 { 選項key: true/false }；使用者按取消回傳 null。
+ */
+export const askChecklist = async ({ title, options, confirmText = '確定', note = '' }) => {
+  const items = (options ?? []).map((option, index) => ({ ...option, id: `swal-check-${index}` }))
+  const html =
+    `<div class="keep-list">${items
+      .map(
+        (item) =>
+          `<label class="keep-item"><input type="checkbox" id="${item.id}"${
+            item.checked ? ' checked' : ''
+          } /> ${escapeHtml(item.label)}</label>`,
+      )
+      .join('')}</div>` + (note ? `<p class="keep-note">${escapeHtml(note)}</p>` : '')
+
+  const result = await Swal.fire({
+    ...base,
+    title,
+    html,
+    icon: 'warning',
+    showCancelButton: true,
+    confirmButtonText: confirmText,
+    cancelButtonText: '取消',
+    focusConfirm: false,
+    preConfirm: () =>
+      Object.fromEntries(items.map((item) => [item.key, document.getElementById(item.id)?.checked === true])),
+  })
+  return result.isConfirmed ? result.value : null
+}
+
+const escapeHtml = (text) =>
+  String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+
+/**
+ * 從一串選項裡挑一個（一行一顆按鈕，按一下就選好）。
+ * 直接用 SweetAlert2 的 html 畫按鈕，所以不用自己寫對話框。
+ */
+export const pickFromList = async ({ title, options, confirmText = '' }) => {
+  if (!options?.length) return null
+
+  const html = `<div class="pick-list">${options
+    .map((option) => `<button type="button" class="pick-item" data-pick="${escapeHtml(option)}">${escapeHtml(option)}</button>`)
+    .join('')}</div>`
+
+  let chosen = null
+  await Swal.fire({
+    ...base,
+    title,
+    html,
+    showConfirmButton: !!confirmText,
+    confirmButtonText: confirmText || undefined,
+    showCancelButton: true,
+    cancelButtonText: '取消',
+    customClass: { popup: 'pick-popup' },
+    didOpen: (popup) => {
+      popup.querySelectorAll('.pick-item').forEach((el) => {
+        el.addEventListener('click', () => {
+          chosen = el.dataset.pick
+          Swal.close()
+        })
+      })
+    },
+  })
+  return chosen
+}

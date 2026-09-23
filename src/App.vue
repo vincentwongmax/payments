@@ -6,7 +6,14 @@ import { clear, del, getAll, put, wipe } from './lib/db.js'
 import { compressImage, extFromMime, fileToStored, heicToJpeg, isHeic, readImageTime, sniffImageType, storedToFile } from './lib/image.js'
 import { hashFile } from './lib/md5.js'
 import { mergeParsed, parsePaymentText, pickDate, pickDefaultAmount, preloadOcr, recognizePasses } from './lib/ocr.js'
-import { askConfirm, askText, warn } from './lib/dialog.js'
+/* 對話框統一走 src/lib/dialog.js（SweetAlert2，樣式在 style.css） */
+import { askChecklist, askConfirm, askText, pickFromList, warn } from './lib/dialog.js'
+import {
+  keepNoteCategories,
+  noteKey,
+  normalizeNoteCategories,
+  seedNoteCategories,
+} from './lib/notes.js'
 import { missingPersonIds, personNameSnapshot, recordsUsingPerson, restoreMissingPersons } from './lib/persons.js'
 import { fmtDateTime, labelBySource, parseShareParams, safeFileNamePart, searchFromText, shareLinkKey, uid } from './lib/util.js'
 
@@ -407,12 +414,16 @@ function shareSearch() {
  * （force = true 是使用者自己按「套用」時用的，那時就以他的意思為準）。
  */
 function applyShareParams(search = shareSearch(), force = false) {
-  const { names, currency } = parseShareParams(search)
-  if (!names.length && !currency) return { added: [], currencySet: '', skipped: true }
+  const { names, currency, notes } = parseShareParams(search)
+  if (!names.length && !currency && !notes.length) {
+    return { added: [], currencySet: '', notesAdded: [], skipped: true }
+  }
 
   /* 這組名單之前套用過就不再動作，才不會把使用者刪掉的人物加回來 */
   const key = shareLinkKey(names)
-  if (key && appliedLinks.includes(key) && !force) return { added: [], currencySet: '', skipped: true }
+  if (key && appliedLinks.includes(key) && !force) {
+    return { added: [], currencySet: '', notesAdded: [], skipped: true }
+  }
 
   const added = []
   for (const name of names) {
@@ -425,6 +436,15 @@ function applyShareParams(search = shareSearch(), force = false) {
     added.push(name)
   }
 
+  /* 連結帶進來的備注分類：標成 link，重置時永遠保留 */
+  const notesAdded = []
+  for (const note of notes) {
+    const exists = noteCategories.value.some((c) => noteKey(c.text) === noteKey(note))
+    if (exists) continue
+    noteCategories.value.push({ text: note, link: true })
+    notesAdded.push(note)
+  }
+
   let currencySet = ''
   if (currency && currency !== defaultCurrency.value) {
     defaultCurrency.value = currency
@@ -434,6 +454,7 @@ function applyShareParams(search = shareSearch(), force = false) {
 
   const bits = []
   if (added.length) bits.push(`新增人物 ${added.join('、')}`)
+  if (notesAdded.length) bits.push(`新增備注分類 ${notesAdded.join('、')}`)
   if (currencySet) bits.push(`預設幣別設為 ${currencySet}`)
   if (bits.length) backupNotice.value = `從連結套用：${bits.join('、')}`
 
@@ -442,11 +463,47 @@ function applyShareParams(search = shareSearch(), force = false) {
     appliedLinks = [...appliedLinks, key].slice(-20)
     put('settings', { id: 'appliedShareLinks', value: appliedLinks }).catch(() => {})
   }
-  return { added, currencySet, skipped: false }
+  return { added, currencySet, notesAdded, skipped: false }
 }
 
 /* 已經套用過的分享連結名單（存在本機，「重置」時會一起清掉） */
 let appliedLinks = []
+
+/* ---------- 備注的分類（常用字串） ---------- */
+const noteCategories = ref(seedNoteCategories())
+
+/** 這個備注存成常用分類（已經有就什麼都不做） */
+function addNoteCategory(text) {
+  const clean = String(text ?? '').trim()
+  if (!clean) return false
+  if (noteCategories.value.some((c) => noteKey(c.text) === noteKey(clean))) return false
+  noteCategories.value.push({ text: clean, link: false })
+  return true
+}
+
+/** 從記錄卡片按「＋ 常用」 */
+function onSaveNoteCategory(text) {
+  const clean = String(text ?? '').trim()
+  if (!clean) {
+    backupNotice.value = '備注是空的，先打點字再存成常用。'
+    return
+  }
+  const added = addNoteCategory(clean)
+  backupNotice.value = added ? `已把「${clean}」存成常用的備注分類` : `「${clean}」已經在常用的備注分類裡了`
+}
+
+/** 從記錄卡片按「分類」：使用者挑一個填進那一筆的備注 */
+async function onPickNoteCategory(record) {
+  if (!noteCategories.value.length) {
+    await warn('還沒有備注分類', '先在某筆記錄的備注打字，再按「＋ 常用」，分類就會出現在這裡。')
+    return
+  }
+  const chosen = await pickFromList({
+    title: '選一個備注分類',
+    options: noteCategories.value.map((c) => c.text),
+  })
+  if (chosen !== null) record.note = chosen
+}
 
 const actionNotice = ref('')
 
@@ -1159,21 +1216,30 @@ async function refreshApp() {
   location.reload()
 }
 
-/* ---------- 重置：什麼都不留 ---------- */
+/* ---------- 重置：可以選擇要保留什麼 ---------- */
 async function resetAll() {
-  const ok = await askConfirm({
+  /*
+   * 重置時讓使用者勾選要保留什麼。
+   * 從連結帶進來的備注分類永遠保留（不用選），所以不列在選項裡。
+   */
+  const keep = await askChecklist({
     title: '確定要重置嗎？',
-    text: '重置會刪除全部的付款記錄、圖片、人物清單與設定，而且無法復原。',
-    confirmText: '重置並清空',
-    icon: 'warning',
+    confirmText: '重置',
+    options: [
+      { key: 'persons', label: '保留人物', checked: false },
+      { key: 'currency', label: '保留預設幣別', checked: false },
+      { key: 'notes', label: '保留備注分類', checked: false },
+    ],
+    note: '不勾的項目會被清掉；付款記錄與圖片一律刪除，無法復原。',
   })
-  if (!ok) return
+  if (keep === null) return
 
   records.value.forEach((r) => revoke(r.url))
   records.value = []
-  persons.value = []
-  defaultCurrency.value = ''
-  actionNotice.value = ''
+  if (!keep.persons) persons.value = []
+  if (!keep.currency) defaultCurrency.value = ''
+  /* 連結帶進來的一定留著，其他的看使用者有沒有勾 */
+  noteCategories.value = keepNoteCategories(noteCategories.value, keep.notes)
   actionNotice.value = ''
   savedSigs.clear()
   seqCounter = 0
@@ -1184,9 +1250,22 @@ async function resetAll() {
   try {
     await wipe()
     storageError.value = ''
+    /* wipe() 會清掉 settings，保留下來的東西要補寫回去 */
+    await persist()
   } catch (e) {
     storageError.value = `重置失敗：${e?.message ?? e}`
   }
+
+  const kept = []
+  if (persons.value.length) kept.push(`人物 ${persons.value.length} 位`)
+  if (defaultCurrency.value) kept.push(`預設幣別 ${defaultCurrency.value}`)
+  if (noteCategories.value.length) {
+    const fromLink = noteCategories.value.filter((c) => c.link).length
+    kept.push(
+      `備注分類 ${noteCategories.value.length} 個${fromLink ? `（其中 ${fromLink} 個來自連結）` : ''}`,
+    )
+  }
+  backupNotice.value = kept.length ? `已重置，保留：${kept.join('、')}` : '已重置，所有資料都清空了'
 }
 
 /* ---------- 匯出／匯入 ---------- */
@@ -1478,6 +1557,7 @@ async function persist() {
     }
     await put('settings', { id: 'defaultCurrency', value: defaultCurrency.value })
     await put('settings', { id: 'manualCounter', value: manualCounter })
+    await put('settings', { id: 'noteCategories', value: noteCategories.value.map((c) => ({ ...c })) })
     storageError.value = ''
   } catch (e) {
     storageError.value = `資料無法存到本機：${e?.message ?? e}`
@@ -1486,7 +1566,7 @@ async function persist() {
 
 let saveTimer
 watch(
-  [records, persons, defaultCurrency],
+  [records, persons, defaultCurrency, noteCategories],
   () => {
     clearTimeout(saveTimer)
     saveTimer = setTimeout(persist, 300)
@@ -1557,6 +1637,9 @@ onMounted(async () => {
     }
     if (personNotices.length) actionNotice.value = personNotices.join('\n')
     defaultCurrency.value = settings.find((s) => s.id === 'defaultCurrency')?.value ?? ''
+    /* 備注分類：第一次用給預設清單，之後以存下來的為準 */
+    const savedNotes = settings.find((s) => s.id === 'noteCategories')?.value
+    if (Array.isArray(savedNotes)) noteCategories.value = normalizeNoteCategories(savedNotes)
     const links = settings.find((s) => s.id === 'appliedShareLinks')?.value
     appliedLinks = Array.isArray(links) ? links : []
     /* 手動新增的編號接續舊資料（沒有編號的「手動新增」不算），號碼不重用 */
@@ -1668,7 +1751,7 @@ onUnmounted(() => {
 
       <!-- 只有在一個人物都沒有的時候才出現（加到手機主畫面常常就是這種情況） -->
       <details v-if="!persons.length" class="apply-link" open>
-        <summary>從連結套用人物與預設幣別</summary>
+        <summary>從連結套用（人物／幣別／備注分類）</summary>
         <div class="apply-link-row">
           <input
             v-model="linkInput"
@@ -1691,8 +1774,9 @@ onUnmounted(() => {
           </button>
         </div>
         <p class="hint">
-          例如 <code>?persons=Vincent,Ben,Ken&amp;currency=CNY</code>。加到手機主畫面的 App
-          有可能讀不到網址上的參數，把原本那個連結貼在這裡就會補回來。
+          例如 <code>?persons=Vincent,Ben&amp;currency=CNY&amp;notes=吃_早餐,打車(去程)</code>。
+          加到手機主畫面的 App 有可能讀不到網址上的參數，把原本那個連結貼在這裡就會補回來；
+          從連結加進來的備注分類會永久保留（重置也不會消失）。
         </p>
       </details>
 
@@ -1703,13 +1787,23 @@ onUnmounted(() => {
       <ul v-else class="people">
         <li v-for="p in persons" :key="p.id" class="person">
           <span class="avatar" aria-hidden="true">{{ p.name.slice(0, 1) }}</span>
-          <span class="person-name">{{ p.name }}</span>
-          <span v-if="p.isSelf" class="tag">自己</span>
-          <span v-if="usedCount(p)" class="tag tag-used" :title="`付款人 ${personUsage(p.id).payer} 筆、受益人 ${personUsage(p.id).beneficiary} 筆，不能刪除`">
-            {{ usedCount(p) }} 筆
-          </span>
-          <span v-if="p.aliases?.length" class="aliases" :title="p.aliases.join('、')">
-            別名 {{ p.aliases.join('、') }}
+          <span class="person-name" :title="p.name">{{ p.name }}</span>
+          <!-- 固定寬度的一欄：每一列的「自己」「N 筆」標籤才會左右對齊 -->
+          <span class="person-meta">
+            <!-- 「自己」也佔一個固定格子，沒有的時候留空，後面的標籤才不會位移 -->
+            <span class="person-self">
+              <span v-if="p.isSelf" class="tag">自己</span>
+            </span>
+            <span
+              v-if="usedCount(p)"
+              class="tag tag-used"
+              :title="`付款人 ${personUsage(p.id).payer} 筆、受益人 ${personUsage(p.id).beneficiary} 筆，不能刪除`"
+            >
+              {{ usedCount(p) }} 筆
+            </span>
+            <span v-if="p.aliases?.length" class="aliases" :title="p.aliases.join('、')">
+              別名 {{ p.aliases.join('、') }}
+            </span>
           </span>
           <span class="spacer" />
           <button class="btn btn-icon" @click="openEditPerson(p)">修改</button>
@@ -1790,12 +1884,15 @@ onUnmounted(() => {
           :key="r.id"
           :record="r"
           :persons="persons"
+          :note-categories="noteCategories"
           :index-label="seqLabels.get(r.id) ?? ''"
           @view="openViewer"
           @remove="removeRecord"
           @retry="retryOcr"
           @skip="skipOcr"
           @rename-source="renameSource"
+          @pick-note="onPickNoteCategory"
+          @save-note="onSaveNoteCategory"
           @attach="attachImage"
         />
       </div>
@@ -2152,6 +2249,9 @@ onUnmounted(() => {
 }
 
 .person-name {
+  /* 固定寬度：名字長短不一樣時，「自己」「N 筆」的欄位才會對齊 */
+  flex: 0 0 auto;
+  width: 104px;
   min-width: 0;
   overflow: hidden;
   font-weight: 550;
@@ -2159,7 +2259,28 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
+/*
+ * 標籤欄：固定寬度，每一列的標籤都從同一個位置開始。
+ * 名字太長的用 … 收掉（滑過去看得到全名）。
+ */
+.person-meta {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  width: 158px;
+  min-width: 0;
+}
+
+/* 「自己」的固定格子：沒有這個標籤時也留著同樣的寬度 */
+.person-self {
+  display: flex;
+  flex: 0 0 auto;
+  width: 46px;
+}
+
 .tag {
+  flex: 0 0 auto;
   padding: 2px 8px;
   border-radius: 999px;
   background: var(--accent-soft);
@@ -2172,10 +2293,11 @@ onUnmounted(() => {
 .tag-used {
   background: var(--warn-soft);
   color: var(--warn);
-  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
 }
 
 .aliases {
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   padding: 2px 8px;
@@ -2522,22 +2644,32 @@ onUnmounted(() => {
 
   .person {
     flex-wrap: nowrap;
+    gap: 8px;
+    padding: 8px;
   }
 
-  /* 名字（或別名）太長就用 … 收掉，按鈕一律留在同一行 */
   .person .avatar,
-  .person .tag,
   .person .btn {
     flex: 0 0 auto;
   }
 
+  /* 手機版也固定欄寬，「自己」「N 筆」的標籤才會上下對齊 */
   .person-name {
-    flex: 1 1 auto;
+    flex: 0 0 auto;
+    width: 74px;
+  }
+
+  .person-meta {
+    width: 120px;
+    gap: 5px;
+  }
+
+  .person-self {
+    width: 42px;
   }
 
   .person .aliases {
     flex: 0 1 auto;
-    max-width: 34%;
   }
 
   .inline-field {
