@@ -7,7 +7,7 @@ import { compressImage, extFromMime, fileToStored, heicToJpeg, isHeic, readImage
 import { hashFile } from './lib/md5.js'
 import { mergeParsed, parsePaymentText, pickDate, pickDefaultAmount, preloadOcr, recognizePasses } from './lib/ocr.js'
 /* 對話框統一走 src/lib/dialog.js（SweetAlert2，樣式在 style.css） */
-import { askChecklist, askConfirm, askText, pickFromList, warn } from './lib/dialog.js'
+import { askChecklist, askConfirm, askText, askTextWithList, pickFromList, warn } from './lib/dialog.js'
 import {
   keepNoteCategories,
   moveNoteCategory,
@@ -641,6 +641,7 @@ async function editPlainCell(record, key) {
       title: '受益人（可多選）',
       confirmText: '套用',
       icon: 'question',
+      selectAll: true,
       options: persons.value.map((p) => ({
         key: p.id,
         label: p.name,
@@ -660,7 +661,13 @@ async function editPlainCell(record, key) {
   }
 
   if (key === 'note') {
-    const next = await askText({ title: '備注', value: record.note ?? '', placeholder: '例如：停車費(15:14)' })
+    const next = await askTextWithList({
+      title: '備注',
+      text: '可以直接打字，也可以點下面的常用分類。',
+      value: record.note ?? '',
+      placeholder: '例如：停車費(15:14)',
+      options: noteCategories.value.map((c) => c.text),
+    })
     if (next === null) return
     record.note = next.trim()
     return

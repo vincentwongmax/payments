@@ -457,6 +457,24 @@ select.input {
   resize: vertical;
 }
 
+/* 全選那一列：跟其他選項用一條線隔開 */
+.keep-all {
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--line);
+  font-weight: 600;
+}
+
+/* 對話框裡「輸入框 + 可點選項」的組合（備注） */
+.pick-list-compact {
+  max-height: 34vh;
+  margin-top: 10px;
+}
+
+.pick-list-compact .pick-item {
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
 /* ---------- 其他 ---------- */
 .err {
   margin: 0;

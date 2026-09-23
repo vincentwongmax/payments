@@ -51,17 +51,34 @@ export const askText = ({ title, text = '', value = '', placeholder = '', confir
  * 勾選清單（例如重置時選擇要保留什麼）。
  * 回傳 { 選項key: true/false }；使用者按取消回傳 null。
  */
-export const askChecklist = async ({ title, options, confirmText = '確定', note = '', icon = 'warning' }) => {
+export const askChecklist = async ({
+  title,
+  options,
+  confirmText = '確定',
+  note = '',
+  icon = 'warning',
+  selectAll = false,
+}) => {
   const items = (options ?? []).map((option, index) => ({ ...option, id: `swal-check-${index}` }))
+  const allId = 'swal-check-all'
+  const allChecked = items.length > 0 && items.every((item) => item.checked)
   const html =
-    `<div class="keep-list">${items
+    `<div class="keep-list">` +
+    (selectAll
+      ? `<label class="keep-item keep-all"><input type="checkbox" id="${allId}"${
+          allChecked ? ' checked' : ''
+        } /> 全選</label>`
+      : '') +
+    items
       .map(
         (item) =>
           `<label class="keep-item"><input type="checkbox" id="${item.id}"${
             item.checked ? ' checked' : ''
           } /> ${escapeHtml(item.label)}</label>`,
       )
-      .join('')}</div>` + (note ? `<p class="keep-note">${escapeHtml(note)}</p>` : '')
+      .join('') +
+    `</div>` +
+    (note ? `<p class="keep-note">${escapeHtml(note)}</p>` : '')
 
   const result = await Swal.fire({
     ...base,
@@ -72,10 +89,73 @@ export const askChecklist = async ({ title, options, confirmText = '確定', not
     confirmButtonText: confirmText,
     cancelButtonText: '取消',
     focusConfirm: false,
+    didOpen: (popup) => {
+      if (!selectAll) return
+      const all = popup.querySelector(`#${allId}`)
+      const boxes = items.map((item) => popup.querySelector(`#${item.id}`))
+      all?.addEventListener('change', () => boxes.forEach((box) => box && (box.checked = all.checked)))
+      boxes.forEach((box) =>
+        box?.addEventListener('change', () => {
+          if (all) all.checked = boxes.every((b) => b && b.checked)
+        }),
+      )
+    },
     preConfirm: () =>
       Object.fromEntries(items.map((item) => [item.key, document.getElementById(item.id)?.checked === true])),
   })
   return result.isConfirmed ? result.value : null
+}
+
+/**
+ * 輸入文字，但下面同時列出一串常用選項可以點（點一下就填進輸入框）。
+ * 用在備注：可以自己打，也可以直接挑一個分類。
+ */
+export const askTextWithList = async ({
+  title,
+  text = '',
+  value = '',
+  placeholder = '',
+  options = [],
+  confirmText = '確定',
+}) => {
+  const html =
+    `<input id="swal-with-list" class="swal2-input" value="${escapeHtml(value)}" placeholder="${escapeHtml(
+      placeholder,
+    )}" autocapitalize="off" autocorrect="off" spellcheck="false" />` +
+    (options.length
+      ? `<div class="pick-list pick-list-compact">${options
+          .map(
+            (option) =>
+              `<button type="button" class="pick-item" data-fill="${escapeHtml(option)}">${escapeHtml(
+                option,
+              )}</button>`,
+          )
+          .join('')}</div>`
+      : '')
+
+  const result = await Swal.fire({
+    ...base,
+    title,
+    text,
+    html,
+    showCancelButton: true,
+    confirmButtonText: confirmText,
+    cancelButtonText: '取消',
+    focusConfirm: false,
+    /* 刻意不自動對焦：手機上鍵盤會把下面的分類清單蓋住 */
+    didOpen: (popup) => {
+      popup.querySelectorAll('[data-fill]').forEach((el) =>
+        el.addEventListener('click', () => {
+          const input = popup.querySelector('#swal-with-list')
+          if (!input) return
+          input.value = el.dataset.fill
+          input.focus()
+        }),
+      )
+    },
+    preConfirm: () => document.getElementById('swal-with-list')?.value ?? '',
+  })
+  return result.isConfirmed ? String(result.value ?? '') : null
 }
 
 const escapeHtml = (text) =>
