@@ -2871,7 +2871,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 10px;
+  padding: 8px 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--surface-2);
@@ -3291,8 +3291,9 @@ onUnmounted(() => {
 
   .person {
     flex-wrap: nowrap;
-    gap: 8px;
-    padding: 8px;
+    gap: 6px;
+    /* 右邊留 12px：按鈕不會貼著卡片的邊線（以前是 10px，這裡多給一點） */
+    padding: 8px 12px;
   }
 
   .person .avatar,
@@ -3300,23 +3301,38 @@ onUnmounted(() => {
     flex: 0 0 auto;
   }
 
-  /* 手機版也固定欄寬，「自己」「N 筆」的標籤才會上下對齊 */
+  /*
+   * 手機版也固定欄寬（「自己」「N 筆」的標籤才會上下對齊），
+   * 但每一欄都要縮小，不然整列會超過卡片寬度、把「刪除」擠到邊線上。
+   */
+  .person .avatar {
+    width: 26px;
+    height: 26px;
+    font-size: 13px;
+  }
+
   .person-name {
     flex: 0 0 auto;
-    width: 74px;
+    width: 66px;
   }
 
   .person-meta {
-    width: 120px;
-    gap: 5px;
+    width: 96px;
+    gap: 4px;
   }
 
   .person-self {
-    width: 42px;
+    width: 40px;
   }
 
-  .person .aliases {
-    flex: 0 1 auto;
+  .person .tag {
+    padding: 2px 6px;
+    font-size: 11px;
+  }
+
+  .person .btn {
+    min-height: 30px;
+    padding: 0 8px;
   }
 
   .inline-field {
