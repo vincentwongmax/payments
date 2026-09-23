@@ -19,11 +19,24 @@ const personDialogEl = ref(null)
 const draft = ref({ id: null, name: '', isSelf: false, aliasesText: '' })
 const err = ref('')
 
+/**
+ * 開人物視窗。
+ * showModal() 會自己找第一個可以聚焦的元素（在 iPhone 上就是名稱輸入框），
+ * 手機一開就跳鍵盤很干擾，所以焦點改放在對話框本身——用 Tab 還是進得去輸入框。
+ */
+function openPersonDialog() {
+  nextTick(() => {
+    const dialog = personDialogEl.value
+    dialog?.showModal()
+    dialog?.focus?.()
+  })
+}
+
 function openCreatePerson() {
   draft.value = { id: null, name: '', isSelf: persons.value.length === 0, aliasesText: '' }
   mergeTargetId.value = ''
   err.value = ''
-  nextTick(() => personDialogEl.value.showModal())
+  openPersonDialog()
 }
 
 function openEditPerson(person) {
@@ -35,7 +48,7 @@ function openEditPerson(person) {
   }
   mergeTargetId.value = ''
   err.value = ''
-  nextTick(() => personDialogEl.value.showModal())
+  openPersonDialog()
 }
 
 /** 這個人物被記錄用到的次數，分開算付款人與受益人 */
@@ -269,7 +282,7 @@ async function mergeInto() {
   })
   if (!ok) {
     /* 取消就回到修改視窗，讓使用者可以改別的 */
-    nextTick(() => personDialogEl.value?.showModal())
+    openPersonDialog()
     return
   }
 
@@ -1898,7 +1911,8 @@ onUnmounted(() => {
       </div>
     </dialog>
 
-    <dialog ref="personDialogEl" class="dialog">
+    <!-- autofocus 放在對話框本身：不要讓瀏覽器自動聚焦名稱輸入框（手機會跳鍵盤） -->
+    <dialog ref="personDialogEl" class="dialog" autofocus>
       <form @submit.prevent="savePerson">
         <h3 class="dialog-head">{{ draft.id ? '修改人物' : '新增人物' }}</h3>
         <div class="dialog-body">
