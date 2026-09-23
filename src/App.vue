@@ -17,7 +17,7 @@ import {
   renameNoteCategory,
   seedNoteCategories,
 } from './lib/notes.js'
-import { recordsToText } from './lib/textExport.js'
+import { recordCells, recordsToText } from './lib/textExport.js'
 import { missingPersonIds, personNameSnapshot, recordsUsingPerson, restoreMissingPersons } from './lib/persons.js'
 import { fmtDateTime, labelBySource, parseShareParams, safeFileNamePart, searchFromText, shareLinkKey, uid } from './lib/util.js'
 
@@ -600,6 +600,83 @@ async function deleteCategory(text) {
 
 const moveCategory = (index, delta) => {
   noteCategories.value = moveNoteCategory(noteCategories.value, index, delta)
+}
+
+/* ---------- 普通文字模式（只影響「付款記錄」那一區） ---------- */
+const plainMode = ref(false)
+const plainRows = computed(() => recordCells(records.value, persons.value))
+
+function togglePlainMode() {
+  plainMode.value = !plainMode.value
+  backupNotice.value = plainMode.value
+    ? '已切換成普通文字模式，按「返回」就會看到（點欄位可以直接改）'
+    : '已切換回正常模式，按「返回」就會看到'
+}
+
+/**
+ * 普通文字模式：點表格裡的欄位就直接改那一筆（沒有其他按鈕）。
+ * 付錢人＝單選、受益人＝多選、金額／備注／付款時間＝輸入。
+ */
+async function editPlainCell(record, key) {
+  if (!record) return
+
+  if (key === 'payer') {
+    const chosen = await pickFromList({
+      title: '付錢人',
+      options: persons.value.map((p) => p.name),
+      confirmText: '清除',
+    })
+    if (chosen === null) return
+    const hit = persons.value.find((p) => p.name === chosen)
+    record.payerId = hit ? hit.id : ''
+    return
+  }
+
+  if (key === 'beneficiaries') {
+    if (!persons.value.length) {
+      await warn('還沒有人物', '先到上面的「人物」新增人物，才能選受益人。')
+      return
+    }
+    const picked = await askChecklist({
+      title: '受益人（可多選）',
+      confirmText: '套用',
+      icon: 'question',
+      options: persons.value.map((p) => ({
+        key: p.id,
+        label: p.name,
+        checked: (record.beneficiaryIds ?? []).includes(p.id),
+      })),
+    })
+    if (picked === null) return
+    record.beneficiaryIds = persons.value.filter((p) => picked[p.id]).map((p) => p.id)
+    return
+  }
+
+  if (key === 'amount') {
+    const next = await askText({ title: '金額', value: record.amount ?? '', placeholder: '0.00' })
+    if (next === null) return
+    record.amount = next.trim()
+    return
+  }
+
+  if (key === 'note') {
+    const next = await askText({ title: '備注', value: record.note ?? '', placeholder: '例如：停車費(15:14)' })
+    if (next === null) return
+    record.note = next.trim()
+    return
+  }
+
+  if (key === 'time') {
+    const next = await askText({
+      title: '付款時間',
+      text: '格式：YYYY-MM-DD HH:mm（可以留空）',
+      value: record.paidAtText ?? '',
+      placeholder: '2026-08-02 15:23',
+    })
+    if (next === null) return
+    record.paidAtText = next.trim()
+    record.paidAtManual = true
+  }
 }
 
 /* ---------- 匯出文字（只文字、不含圖片） ---------- */
@@ -1975,6 +2052,26 @@ onUnmounted(() => {
 
       <section class="card">
         <div class="card-head card-head-inline">
+          <h2>顯示模式</h2>
+        </div>
+        <p class="hint">
+          普通文字模式只會把「付款記錄」那一區變成表格（每列只剩一個「圖片」按鈕），
+          其他區塊都不變。再按一次這個按鈕就會切回正常模式；重新整理或重新打開 App
+          也會回到正常模式。
+        </p>
+        <button
+          class="btn"
+          :class="{ 'btn-primary': plainMode }"
+          :aria-pressed="plainMode ? 'true' : 'false'"
+          @click="togglePlainMode"
+        >
+          {{ plainMode ? '切換回正常模式' : '切換成普通文字模式' }}
+        </button>
+        <p class="hint">目前：{{ plainMode ? '普通文字模式' : '正常模式' }}</p>
+      </section>
+
+      <section class="card">
+        <div class="card-head card-head-inline">
           <h2>匯出文字（不含圖片）</h2>
         </div>
         <p class="hint">
@@ -2203,6 +2300,39 @@ onUnmounted(() => {
       <p v-if="!records.length" class="empty">
         還沒有記錄。可以「上傳圖片」一次選多張、「貼上圖片」貼上剪貼簿的截圖，或「新增記錄」自己填。
       </p>
+
+      <!-- 普通文字模式：只有文字與一個「圖片」按鈕，點欄位可以直接改 -->
+      <div v-else-if="plainMode" class="plain-wrap">
+        <p class="hint plain-tip">點欄位就可以直接修改（付錢人、受益人也可以選）。</p>
+        <table class="plain-table">
+          <thead>
+            <tr>
+              <th>付錢人</th>
+              <th>受益人</th>
+              <th>錢</th>
+              <th>備注</th>
+              <th>付款時間</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(r, i) in records" :key="r.id">
+              <td
+                v-for="(cell, j) in plainRows[i] ?? []"
+                :key="j"
+                class="plain-cell"
+                title="點一下修改"
+                @click="editPlainCell(r, ['payer', 'beneficiaries', 'amount', 'note', 'time'][j])"
+              >
+                {{ cell || '—' }}
+              </td>
+              <td class="plain-img">
+                <button v-if="r.url" class="btn btn-icon" @click="openViewer(r)">圖片</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
 
       <div v-else class="recs">
         <RecordCard
@@ -2604,6 +2734,60 @@ onUnmounted(() => {
   flex: 0 0 auto;
   min-width: 36px;
   padding: 0 8px;
+}
+
+/* ---------- 普通文字模式：表格（同一列的資料不分行，太寬就橫向捲動） ---------- */
+.plain-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.plain-tip {
+  margin-bottom: 8px;
+}
+
+.plain-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  /* 同一列的資料不分行 */
+  white-space: nowrap;
+}
+
+.plain-table th,
+.plain-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.plain-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.plain-table td {
+  font-variant-numeric: tabular-nums;
+}
+
+.plain-cell {
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.plain-cell:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.plain-table td.plain-img {
+  text-align: right;
 }
 
 .stat-list {

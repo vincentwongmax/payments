@@ -51,7 +51,7 @@ export const askText = ({ title, text = '', value = '', placeholder = '', confir
  * 勾選清單（例如重置時選擇要保留什麼）。
  * 回傳 { 選項key: true/false }；使用者按取消回傳 null。
  */
-export const askChecklist = async ({ title, options, confirmText = '確定', note = '' }) => {
+export const askChecklist = async ({ title, options, confirmText = '確定', note = '', icon = 'warning' }) => {
   const items = (options ?? []).map((option, index) => ({ ...option, id: `swal-check-${index}` }))
   const html =
     `<div class="keep-list">${items
@@ -67,7 +67,7 @@ export const askChecklist = async ({ title, options, confirmText = '確定', not
     ...base,
     title,
     html,
-    icon: 'warning',
+    icon,
     showCancelButton: true,
     confirmButtonText: confirmText,
     cancelButtonText: '取消',
