@@ -107,25 +107,47 @@ function removePerson(person) {
 const usedCount = (person) => recordsUsingPerson(records.value, person.id).length
 
 /*
- * iPhone：在「已經不能按」的按鈕上連點兩下，Safari 會把整個畫面放大。
- * touch-action: manipulation 在 Safari 只認手指底下那一個元素，
- * 而 disabled 的按鈕根本收不到事件，所以再怎麼設都沒用。
- * 這裡是最後一道防線：真的連點兩下、而且第二下落在不能按的按鈕上時，
- * 直接擋掉那一下的預設行為（只擋這個情況，正常的快速連點不受影響）。
+ * iPhone：在畫面上連點兩下，Safari 會把整個畫面放大。
+ * touch-action: manipulation 在 Safari 只認手指底下那一個元素（不會往上找），
+ * 遇到 disabled 的按鈕或某些非互動元素時還是照樣放大，所以這裡統一處理：
+ * 「同一個位置在 350 毫秒內被點第二下」就把那一下的預設行為擋掉。
+ * 有滑動過（捲動結束順手點一下）、或手指不只一隻（雙指縮放）都不算，
+ * 正常操作不會被吃掉。
  */
 const DOUBLE_TAP_MS = 350
-let lastTapAt = 0
+const DOUBLE_TAP_PX = 24
+let lastTap = { at: 0, x: 0, y: 0 }
+let gestureMoved = false
+/* 預設 1：真的收到 touchstart 才會被改寫，這樣少收到一個事件也不會整組失效 */
+let gestureTouches = 1
 
-function onTouchEndGuard(event) {
-  const now = Date.now()
-  const gap = now - lastTapAt
-  lastTapAt = now
-  if (gap > DOUBLE_TAP_MS) return
+function onTouchStart(event) {
+  gestureMoved = false
+  gestureTouches = event.touches?.length ?? 1
+}
 
+function onTouchMove() {
+  gestureMoved = true
+}
+
+function onTouchEnd(event) {
   const touch = event.changedTouches?.[0]
-  const under = touch ? document.elementFromPoint(touch.clientX, touch.clientY) : null
-  const blocked = under?.closest?.('button[disabled], [aria-disabled="true"]')
-  if (blocked) event.preventDefault()
+  const now = Date.now()
+  const gap = now - lastTap.at
+  const sameSpot =
+    !!touch &&
+    Math.abs(touch.clientX - lastTap.x) <= DOUBLE_TAP_PX &&
+    Math.abs(touch.clientY - lastTap.y) <= DOUBLE_TAP_PX
+  const isTap =
+    !gestureMoved &&
+    gestureTouches <= 1 &&
+    (event.changedTouches?.length ?? 0) === 1 &&
+    (event.touches?.length ?? 0) === 0
+
+  /* 只有「乾淨的一下」才記成上一次點擊，滑動結束那一下不算 */
+  if (isTap && touch) lastTap = { at: now, x: touch.clientX, y: touch.clientY }
+  if (!isTap || !sameSpot || gap > DOUBLE_TAP_MS) return
+  event.preventDefault()
 }
 
 /*
@@ -133,8 +155,6 @@ function onTouchEndGuard(event) {
  * （見 manifest.json 的說明），那就在這裡把連結貼進來補。
  */
 const linkInput = ref('')
-/* 還沒有任何人物時預設展開（那正是最需要貼連結的時候），載入資料後才決定 */
-const linkBoxOpen = ref(false)
 
 function applyLinkInput() {
   const search = searchFromText(linkInput.value)
@@ -1409,8 +1429,10 @@ watch(
 onMounted(async () => {
   /* 直接按 Ctrl+V 也能貼上圖片 */
   document.addEventListener('paste', onPaste)
-  /* 在不能按的按鈕上連點不要放大畫面（見 onTouchEndGuard） */
-  document.addEventListener('touchend', onTouchEndGuard, { passive: false })
+  /* 連點兩下不要放大畫面（見 onTouchEnd 的說明） */
+  document.addEventListener('touchstart', onTouchStart, { passive: true })
+  document.addEventListener('touchmove', onTouchMove, { passive: true })
+  document.addEventListener('touchend', onTouchEnd, { passive: false })
   /* 程式出錯時顯示出來（不然畫面會像「卡住」，要 F5 才知道） */
   window.addEventListener('app-error', onAppError)
   /* 先開背景載入 OCR 引擎，第一次上傳就不用等 */
@@ -1478,11 +1500,6 @@ onMounted(async () => {
     records.value.forEach((r) => savedSigs.set(r.id, signature(serializeRecord(r))))
     /* 讀完本機資料才處理分享連結，才知道哪些人物已經有了 */
     applyShareParams()
-    /*
-     * 一個人物都沒有（例如剛加到手機主畫面、網址參數又沒帶進來）
-     * 就把「從連結套用」打開，那正是最需要它的時候。
-     */
-    linkBoxOpen.value = persons.value.length === 0
 
     /* 舊版把 File 直接存進 IndexedDB，Safari 會讀不回來：全部改存 bytes 一次 */
     const storeVersion = settings.find((s) => s.id === 'imageStore')?.value ?? 1
@@ -1504,7 +1521,9 @@ onMounted(async () => {
 
 onUnmounted(() => {
   document.removeEventListener('paste', onPaste)
-  document.removeEventListener('touchend', onTouchEndGuard)
+  document.removeEventListener('touchstart', onTouchStart)
+  document.removeEventListener('touchmove', onTouchMove)
+  document.removeEventListener('touchend', onTouchEnd)
   window.removeEventListener('app-error', onAppError)
 })
 </script>
@@ -1579,8 +1598,8 @@ onUnmounted(() => {
         <button class="btn btn-primary" @click="openCreatePerson">新增人物</button>
       </div>
 
-      <!-- iOS 加到主畫面後可能拿不到網址上的參數，這裡可以手動貼連結補回來 -->
-      <details class="apply-link" :open="linkBoxOpen" @toggle="linkBoxOpen = $event.target.open">
+      <!-- 只有在一個人物都沒有的時候才出現（加到手機主畫面常常就是這種情況） -->
+      <details v-if="!persons.length" class="apply-link" open>
         <summary>從連結套用人物與預設幣別</summary>
         <div class="apply-link-row">
           <input
