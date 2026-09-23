@@ -36,9 +36,10 @@ body {
  * iPhone：連續快點按鈕時 Safari 會把整個畫面放大，很干擾。
  * touch-action: manipulation 只關掉「雙擊縮放」，雙指縮放和滑動都還在。
  *
- * 這裡用 * 而不是只設按鈕：按鈕在按下之後會變成 disabled，第二次點就落到
- * 後面的 div（div 的 touch-action 是 auto），Safari 對非互動元素的
- * touch-action 支援並不牢靠，所以整棵樹都設，雙擊就不會再放大。
+ * 整棵樹都設（不只按鈕），因為手指底下那一個元素才是 Safari 看的對象；
+ * 另外 Safari 對 disabled 的按鈕完全不理會 touch-action，所以本專案
+ * 不用 disabled 屬性來表示「不能按」，改用 .is-busy ＋ aria-disabled
+ * （見 style.css 的 .btn.is-busy 與 App.vue 的 onTouchEndGuard）。
  */
 * {
   touch-action: manipulation;
@@ -121,6 +122,22 @@ textarea {
 .btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+/*
+ * 「正在忙／現在不能按」的按鈕刻意不用 disabled 屬性：
+ * iOS 的 disabled 按鈕收不到觸控事件，Safari 就不會套用它身上的
+ * touch-action: manipulation，使用者連點兩下時整個畫面會被放大。
+ * 所以改成看起來一樣灰、但還是一個「活的」元素，行為由 JS 擋。
+ */
+.btn.is-busy {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.btn.is-busy:active {
+  transform: none;
+  box-shadow: var(--shadow-sm);
 }
 
 .btn-primary {

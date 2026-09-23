@@ -107,6 +107,28 @@ function removePerson(person) {
 const usedCount = (person) => recordsUsingPerson(records.value, person.id).length
 
 /*
+ * iPhone：在「已經不能按」的按鈕上連點兩下，Safari 會把整個畫面放大。
+ * touch-action: manipulation 在 Safari 只認手指底下那一個元素，
+ * 而 disabled 的按鈕根本收不到事件，所以再怎麼設都沒用。
+ * 這裡是最後一道防線：真的連點兩下、而且第二下落在不能按的按鈕上時，
+ * 直接擋掉那一下的預設行為（只擋這個情況，正常的快速連點不受影響）。
+ */
+const DOUBLE_TAP_MS = 350
+let lastTapAt = 0
+
+function onTouchEndGuard(event) {
+  const now = Date.now()
+  const gap = now - lastTapAt
+  lastTapAt = now
+  if (gap > DOUBLE_TAP_MS) return
+
+  const touch = event.changedTouches?.[0]
+  const under = touch ? document.elementFromPoint(touch.clientX, touch.clientY) : null
+  const blocked = under?.closest?.('button[disabled], [aria-disabled="true"]')
+  if (blocked) event.preventDefault()
+}
+
+/*
  * 手動套用分享連結：iOS 加到主畫面的 App 可能拿不到網址上的參數
  * （見 manifest.json 的說明），那就在這裡把連結貼進來補。
  */
@@ -1387,6 +1409,8 @@ watch(
 onMounted(async () => {
   /* 直接按 Ctrl+V 也能貼上圖片 */
   document.addEventListener('paste', onPaste)
+  /* 在不能按的按鈕上連點不要放大畫面（見 onTouchEndGuard） */
+  document.addEventListener('touchend', onTouchEndGuard, { passive: false })
   /* 程式出錯時顯示出來（不然畫面會像「卡住」，要 F5 才知道） */
   window.addEventListener('app-error', onAppError)
   /* 先開背景載入 OCR 引擎，第一次上傳就不用等 */
@@ -1480,6 +1504,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   document.removeEventListener('paste', onPaste)
+  document.removeEventListener('touchend', onTouchEndGuard)
   window.removeEventListener('app-error', onAppError)
 })
 </script>
@@ -1494,7 +1519,14 @@ onUnmounted(() => {
       <div class="head-btns">
         <button class="btn" @click="exportBackup">匯出</button>
         <button class="btn" @click="importInputEl.click()">匯入</button>
-        <button class="btn" :disabled="refreshing" @click="refreshApp">刷新</button>
+        <button
+          class="btn"
+          :class="{ 'is-busy': refreshing }"
+          :aria-disabled="refreshing"
+          @click="refreshApp"
+        >
+          刷新
+        </button>
         <button class="btn btn-danger" @click="resetAll">重置</button>
       </div>
       <input
@@ -1562,7 +1594,14 @@ onUnmounted(() => {
             placeholder="貼上分享連結…"
             @keyup.enter="applyLinkInput"
           />
-          <button class="btn" :disabled="!linkInput.trim()" @click="applyLinkInput">套用</button>
+          <button
+            class="btn"
+            :class="{ 'is-busy': !linkInput.trim() }"
+            :aria-disabled="!linkInput.trim()"
+            @click="applyLinkInput"
+          >
+            套用
+          </button>
         </div>
         <p class="hint">
           例如 <code>?persons=Vincent,Ben,Ken&amp;currency=CNY</code>。加到手機主畫面的 App
