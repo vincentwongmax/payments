@@ -2307,6 +2307,7 @@ onUnmounted(() => {
         <table class="plain-table">
           <thead>
             <tr>
+              <th>序號</th>
               <th>付錢人</th>
               <th>受益人</th>
               <th>錢</th>
@@ -2317,6 +2318,13 @@ onUnmounted(() => {
           </thead>
           <tbody>
             <tr v-for="(r, i) in records" :key="r.id">
+              <td
+                class="plain-seq"
+                :title="`來源：${r.source || '本機'}｜點一下可重新命名`"
+                @click="renameSource(r.source || '本機')"
+              >
+                {{ seqLabels.get(r.id) ?? '' }}
+              </td>
               <td
                 v-for="(cell, j) in plainRows[i] ?? []"
                 :key="j"
@@ -2783,6 +2791,17 @@ onUnmounted(() => {
 
 .plain-cell:hover {
   background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* 序號（來源-序號）：點一下可以重新命名來源，跟正常模式一樣 */
+.plain-table td.plain-seq {
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.plain-table td.plain-seq:hover {
   color: var(--accent);
 }
 
