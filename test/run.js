@@ -17,7 +17,7 @@ import {
   pickDate,
   pickDefaultAmount,
 } from '../src/lib/ocr.js'
-import { labelBySource, parseShareParams, safeFileNamePart, shareLinkKey } from '../src/lib/util.js'
+import { labelBySource, parseShareParams, safeFileNamePart, searchFromText, shareLinkKey } from '../src/lib/util.js'
 import {
   missingPersonIds,
   personNameSnapshot,
@@ -681,6 +681,21 @@ assert.deepEqual(
 assert.deepEqual(missingPersonIds(people, dangling[0]), ['pX'], '還缺的 id 要能查出來')
 assert.deepEqual(missingPersonIds(healed.persons, dangling[0]), [], '補回來之後就不缺了')
 
+/* ---------- 從貼上的文字取出分享參數 ---------- */
+assert.equal(
+  searchFromText('https://vincentwongmax.github.io/payments/?persons=A,B&currency=CNY'),
+  '?persons=A,B&currency=CNY',
+  '整串網址',
+)
+assert.equal(searchFromText('?persons=A'), '?persons=A', '只有查詢字串')
+assert.equal(searchFromText('persons=A&currency=CNY'), '?persons=A&currency=CNY', '只有參數')
+assert.equal(searchFromText('  Vincent,Ben  '), '', '看不出參數就當作沒有')
+assert.equal(searchFromText(''), '')
+assert.deepEqual(parseShareParams(searchFromText('x.com/?persons=Vincent,Ben&currency=CNY')), {
+  names: ['Vincent', 'Ben'],
+  currency: 'CNY',
+})
+
 /* ---------- PWA：離線可用需要的檔案 ---------- */
 const root = new URL('..', import.meta.url)
 const readRoot = (f) => readFileSync(new URL(f, root), 'utf8')
@@ -702,7 +717,13 @@ assert.match(shell, /apple-touch-icon/, 'index.html 要有 iOS 加到主畫面�
 const manifest = JSON.parse(readRoot('public/manifest.json'))
 assert.equal(manifest.display, 'standalone', '加到主畫面要全螢幕')
 assert.ok(manifest.icons?.length >= 2, 'manifest 要提供圖示')
-assert.equal(manifest.start_url, './', '要能在子路徑（GitHub Pages）下開')
+assert.equal(manifest.scope, './', '要能在子路徑（GitHub Pages）下開')
+/*
+ * 刻意不寫 start_url：iOS 加到主畫面時會用它當開啟網址，
+ * 一寫死就把分享連結的 ?persons=…&currency=… 丟掉了。
+ * 沒有 start_url 時預設就是「當時那一頁的網址」，參數才會留下來。
+ */
+assert.equal(manifest.start_url, undefined, 'manifest 不要寫 start_url，否則 iOS 會丟掉網址參數')
 
 const sw = readRoot('public/sw.js')
 assert.match(sw, /addEventListener\('fetch'/, 'Service Worker 要有 fetch 處理')

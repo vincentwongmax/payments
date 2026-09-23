@@ -7,7 +7,7 @@ import { compressImage, extFromMime, fileToStored, heicToJpeg, isHeic, readImage
 import { hashFile } from './lib/md5.js'
 import { mergeParsed, parsePaymentText, pickDate, pickDefaultAmount, preloadOcr, recognizePasses } from './lib/ocr.js'
 import { missingPersonIds, personNameSnapshot, recordsUsingPerson, restoreMissingPersons } from './lib/persons.js'
-import { fmtDateTime, labelBySource, parseShareParams, safeFileNamePart, shareLinkKey, uid } from './lib/util.js'
+import { fmtDateTime, labelBySource, parseShareParams, safeFileNamePart, searchFromText, shareLinkKey, uid } from './lib/util.js'
 
 /* ---------- 人物 ---------- */
 const persons = ref([])
@@ -105,6 +105,30 @@ function removePerson(person) {
 
 /* 人物列上的「N 筆」標籤：一眼看出誰被記錄用到（也就不能刪） */
 const usedCount = (person) => recordsUsingPerson(records.value, person.id).length
+
+/*
+ * 手動套用分享連結：iOS 加到主畫面的 App 可能拿不到網址上的參數
+ * （見 manifest.json 的說明），那就在這裡把連結貼進來補。
+ */
+const linkInput = ref('')
+/* 還沒有任何人物時預設展開（那正是最需要貼連結的時候），載入資料後才決定 */
+const linkBoxOpen = ref(false)
+
+function applyLinkInput() {
+  const search = searchFromText(linkInput.value)
+  const { names, currency } = parseShareParams(search)
+  if (!names.length && !currency) {
+    backupNotice.value =
+      '這個連結裡沒有可用的人物或幣別。要像這樣：…?persons=Vincent,Ben&currency=CNY'
+    return
+  }
+
+  const result = applyShareParams(search, true)
+  if (!result.added.length && !result.currencySet) {
+    backupNotice.value = `連結裡的人物與幣別都已經有了（${[...names, currency].filter(Boolean).join('、')}）`
+  }
+  linkInput.value = ''
+}
 
 /* ---------- 還沒有「自己」就先問 ---------- */
 const selfDialogEl = ref(null)
@@ -269,13 +293,31 @@ const revoke = (url) => {
  * 同一組名單只套用一次：之後使用者就算把人物刪掉，重新整理也不會自動加回來
  * （要重新套用同一個連結，得先按「重置」把資料清掉）。
  */
-function applyShareParams() {
-  const { names, currency } = parseShareParams(window.location.search)
-  if (!names.length && !currency) return
+/**
+ * 網址上的參數來源。
+ * iOS 把網站加到主畫面時只會保留 start_url（見 manifest.json 的說明），
+ * 一般查詢字串有可能整個不見，所以 `#` 後面寫的參數也一起支援，
+ * 讓分享連結有第二種寫法可以試。
+ */
+function shareSearch() {
+  if (window.location.search) return window.location.search
+  const hash = window.location.hash.replace(/^#/, '')
+  return hash.includes('=') ? `?${hash}` : ''
+}
+
+/**
+ * 套用分享連結裡的參數（新增缺少的人物、設定預設幣別）。
+ * 已經有的人（含別名比對）直接沿用，不會重複建立。
+ * 同一組名單預設只套用一次：之後使用者就算把人物刪掉，重新整理也不會自動加回來
+ * （force = true 是使用者自己按「套用」時用的，那時就以他的意思為準）。
+ */
+function applyShareParams(search = shareSearch(), force = false) {
+  const { names, currency } = parseShareParams(search)
+  if (!names.length && !currency) return { added: [], currencySet: '', skipped: true }
 
   /* 這組名單之前套用過就不再動作，才不會把使用者刪掉的人物加回來 */
   const key = shareLinkKey(names)
-  if (key && appliedLinks.includes(key)) return
+  if (key && appliedLinks.includes(key) && !force) return { added: [], currencySet: '', skipped: true }
 
   const added = []
   for (const name of names) {
@@ -305,6 +347,7 @@ function applyShareParams() {
     appliedLinks = [...appliedLinks, key].slice(-20)
     put('settings', { id: 'appliedShareLinks', value: appliedLinks }).catch(() => {})
   }
+  return { added, currencySet, skipped: false }
 }
 
 /* 已經套用過的分享連結名單（存在本機，「重置」時會一起清掉） */
@@ -1411,6 +1454,11 @@ onMounted(async () => {
     records.value.forEach((r) => savedSigs.set(r.id, signature(serializeRecord(r))))
     /* 讀完本機資料才處理分享連結，才知道哪些人物已經有了 */
     applyShareParams()
+    /*
+     * 一個人物都沒有（例如剛加到手機主畫面、網址參數又沒帶進來）
+     * 就把「從連結套用」打開，那正是最需要它的時候。
+     */
+    linkBoxOpen.value = persons.value.length === 0
 
     /* 舊版把 File 直接存進 IndexedDB，Safari 會讀不回來：全部改存 bytes 一次 */
     const storeVersion = settings.find((s) => s.id === 'imageStore')?.value ?? 1
@@ -1498,6 +1546,29 @@ onUnmounted(() => {
         <h2>人物</h2>
         <button class="btn btn-primary" @click="openCreatePerson">新增人物</button>
       </div>
+
+      <!-- iOS 加到主畫面後可能拿不到網址上的參數，這裡可以手動貼連結補回來 -->
+      <details class="apply-link" :open="linkBoxOpen" @toggle="linkBoxOpen = $event.target.open">
+        <summary>從連結套用人物與預設幣別</summary>
+        <div class="apply-link-row">
+          <input
+            v-model="linkInput"
+            class="input"
+            type="text"
+            inputmode="url"
+            autocapitalize="off"
+            autocorrect="off"
+            spellcheck="false"
+            placeholder="貼上分享連結…"
+            @keyup.enter="applyLinkInput"
+          />
+          <button class="btn" :disabled="!linkInput.trim()" @click="applyLinkInput">套用</button>
+        </div>
+        <p class="hint">
+          例如 <code>?persons=Vincent,Ben,Ken&amp;currency=CNY</code>。加到手機主畫面的 App
+          有可能讀不到網址上的參數，把原本那個連結貼在這裡就會補回來。
+        </p>
+      </details>
 
       <p v-if="!persons.length" class="empty">
         還沒有任何人物。先新增一位並勾選「這是我自己」，之後的付款人預設就是他。
@@ -1885,6 +1956,46 @@ onUnmounted(() => {
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+/* 從連結套用（加到主畫面後拿不到網址參數時的補救） */
+.apply-link {
+  margin: 0 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.apply-link summary {
+  padding: 9px 12px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 550;
+  cursor: pointer;
+}
+
+.apply-link-row {
+  display: flex;
+  gap: 8px;
+  padding: 0 12px;
+}
+
+.apply-link-row .input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.apply-link .hint {
+  margin: 8px 12px 12px;
+}
+
+.apply-link code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  font-size: 12px;
+  word-break: break-all;
 }
 
 .person {

@@ -90,3 +90,17 @@ export const shareLinkKey = (names) =>
   [...new Set((names ?? []).map((n) => String(n).trim().toLowerCase()).filter(Boolean))]
     .sort()
     .join('|')
+
+/**
+ * 從使用者貼上的文字取出查詢字串。可能貼的是一整串網址、
+ * 只有 `?persons=…` 這一段，或只有 `persons=…&currency=CNY`。
+ */
+export function searchFromText(text) {
+  const t = String(text ?? '').trim()
+  if (!t) return ''
+  const at = t.indexOf('?')
+  if (at >= 0) return t.slice(at)
+  if (t.includes('=')) return `?${t}`
+  return ''
+}
+
