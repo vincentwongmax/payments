@@ -10,8 +10,11 @@ import { mergeParsed, parsePaymentText, pickDate, pickDefaultAmount, preloadOcr,
 import { askChecklist, askConfirm, askText, pickFromList, warn } from './lib/dialog.js'
 import {
   keepNoteCategories,
+  moveNoteCategory,
   noteKey,
   normalizeNoteCategories,
+  removeNoteCategory,
+  renameNoteCategory,
   seedNoteCategories,
 } from './lib/notes.js'
 import { missingPersonIds, personNameSnapshot, recordsUsingPerson, restoreMissingPersons } from './lib/persons.js'
@@ -503,6 +506,100 @@ async function onPickNoteCategory(record) {
     options: noteCategories.value.map((c) => c.text),
   })
   if (chosen !== null) record.note = chosen
+}
+
+/* ---------- 設定頁（整頁切換） ---------- */
+const view = ref('main')
+const newCategory = ref('')
+const storageInfo = ref({ usage: 0, quota: 0, persisted: false })
+const offlineReady = ref(false)
+const buildTime = typeof __BUILD_TIME__ === 'string' ? __BUILD_TIME__ : ''
+const buildTimeText = buildTime
+  ? fmtDateTime(new Date(buildTime).getTime())
+  : '（開發模式沒有建置時間）'
+
+const openSettings = async () => {
+  view.value = 'settings'
+  newCategory.value = ''
+  window.scrollTo({ top: 0 })
+  await Promise.all([loadStorageInfo(), loadOfflineState()])
+}
+
+/** 這台裝置現在是不是已經可以用離線（Service Worker 已經接管） */
+async function loadOfflineState() {
+  try {
+    if (!('serviceWorker' in navigator)) {
+      offlineReady.value = false
+      return
+    }
+    if (navigator.serviceWorker.controller) {
+      offlineReady.value = true
+      return
+    }
+    const reg = await navigator.serviceWorker.getRegistration()
+    offlineReady.value = !!reg?.active
+  } catch {
+    offlineReady.value = false
+  }
+}
+
+const closeSettings = () => {
+  view.value = 'main'
+  window.scrollTo({ top: 0 })
+}
+
+async function loadStorageInfo() {
+  try {
+    const estimate = await navigator.storage?.estimate?.()
+    storageInfo.value = {
+      usage: estimate?.usage ?? 0,
+      quota: estimate?.quota ?? 0,
+      persisted: (await navigator.storage?.persisted?.()) ?? false,
+    }
+  } catch {
+    /* 拿不到就顯示 0，不影響使用 */
+  }
+}
+
+const mb = (bytes) => (bytes ? `${(bytes / 1048576).toFixed(1)} MB` : '0 MB')
+
+function addCategoryFromInput() {
+  const text = newCategory.value.trim()
+  if (!text) return
+  const added = addNoteCategory(text)
+  newCategory.value = ''
+  backupNotice.value = added ? `已新增分類「${text}」` : `「${text}」已經在分類清單裡了`
+}
+
+async function renameCategory(text) {
+  const next = await askText({
+    title: '重新命名分類',
+    text: '只會改清單裡的名字，已經填在記錄備注上的文字不會跟著改。',
+    value: text,
+    placeholder: '分類名稱',
+  })
+  if (next === null) return
+  const result = renameNoteCategory(noteCategories.value, text, next)
+  if (result === null) {
+    await warn('改不了', '名稱不能空白，也不能跟其他分類重複。')
+    return
+  }
+  noteCategories.value = result
+}
+
+async function deleteCategory(text) {
+  const ok = await askConfirm({
+    title: `刪除分類「${text}」？`,
+    text: '只會從常用清單移除；已經填在記錄備注上的文字不會被改掉。',
+    confirmText: '刪除',
+    icon: 'warning',
+  })
+  if (!ok) return
+  noteCategories.value = removeNoteCategory(noteCategories.value, text)
+}
+
+const moveCategory = (index, delta) => {
+  noteCategories.value = moveNoteCategory(noteCategories.value, index, delta)
 }
 
 const actionNotice = ref('')
@@ -1681,6 +1778,139 @@ onUnmounted(() => {
 
 <template>
   <div class="page">
+    <!-- ================= 設定頁 ================= -->
+    <template v-if="view === 'settings'">
+      <header class="head">
+        <div class="head-text">
+          <h1>設定</h1>
+          <p class="hint">分類管理、更新、資料統計與版本資訊。</p>
+        </div>
+        <div class="head-btns">
+          <button class="btn" @click="closeSettings">返回</button>
+        </div>
+      </header>
+
+      <p v-if="backupNotice" class="notice">
+        {{ backupNotice }}
+        <button type="button" class="link" @click="backupNotice = ''">知道了</button>
+      </p>
+
+      <section class="card">
+        <div class="card-head card-head-inline">
+          <h2>備注分類管理 <span class="count">{{ noteCategories.length }}</span></h2>
+        </div>
+        <p class="hint">
+          這些是備注欄位右邊圖示按下去會出現的常用分類。點名稱可以改名，箭頭調整順序。
+        </p>
+
+        <div class="cat-add">
+          <input
+            v-model="newCategory"
+            class="input"
+            placeholder="輸入新的分類名稱…"
+            @keyup.enter="addCategoryFromInput"
+          />
+          <button
+            class="btn btn-primary"
+            :class="{ 'is-busy': !newCategory.trim() }"
+            :aria-disabled="!newCategory.trim()"
+            @click="addCategoryFromInput"
+          >
+            新增
+          </button>
+        </div>
+
+        <p v-if="!noteCategories.length" class="empty">還沒有任何分類，先在上面輸入一個。</p>
+
+        <ul v-else class="cat-list">
+          <li v-for="(c, i) in noteCategories" :key="`${c.text}-${i}`" class="cat">
+            <button type="button" class="cat-name" :title="'點一下改名'" @click="renameCategory(c.text)">
+              {{ c.text }}
+            </button>
+            <span v-if="c.link" class="tag">連結</span>
+            <span class="spacer" />
+            <button
+              class="btn btn-icon"
+              :class="{ 'is-busy': i === 0 }"
+              :aria-disabled="i === 0"
+              title="往上移"
+              @click="moveCategory(i, -1)"
+            >
+              ↑
+            </button>
+            <button
+              class="btn btn-icon"
+              :class="{ 'is-busy': i === noteCategories.length - 1 }"
+              :aria-disabled="i === noteCategories.length - 1"
+              title="往下移"
+              @click="moveCategory(i, 1)"
+            >
+              ↓
+            </button>
+            <button class="btn btn-icon btn-danger" title="刪除" @click="deleteCategory(c.text)">
+              刪除
+            </button>
+          </li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <div class="card-head card-head-inline">
+          <h2>更新</h2>
+        </div>
+        <p class="hint">
+          按下去會先問有沒有新版本，有就更新完再重新載入。加到手機主畫面的 App 沒有網址列，
+          平常就用這個按鈕更新。
+        </p>
+        <button
+          class="btn"
+          :class="{ 'is-busy': refreshing }"
+          :aria-disabled="refreshing"
+          @click="refreshApp"
+        >
+          {{ refreshing ? '更新中…' : '檢查更新並重新載入' }}
+        </button>
+      </section>
+
+      <section class="card">
+        <div class="card-head card-head-inline">
+          <h2>資料統計</h2>
+        </div>
+        <ul class="stat-list">
+          <li><span>付款記錄</span><strong>{{ records.length }} 筆</strong></li>
+          <li><span>人物</span><strong>{{ persons.length }} 位</strong></li>
+          <li><span>備注分類</span><strong>{{ noteCategories.length }} 個</strong></li>
+          <li>
+            <span>瀏覽器已用空間</span>
+            <strong>{{ mb(storageInfo.usage) }}<template v-if="storageInfo.quota"> / {{ mb(storageInfo.quota) }}</template></strong>
+          </li>
+          <li>
+            <span>永久儲存</span>
+            <strong>{{ storageInfo.persisted ? '已取得' : '未取得（空間不足時可能被清掉）' }}</strong>
+          </li>
+          <li>
+            <span>離線快取</span>
+            <strong>{{ offlineReady ? '已就緒' : '尚未就緒' }}</strong>
+          </li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <div class="card-head card-head-inline">
+          <h2>版本資訊</h2>
+        </div>
+        <ul class="stat-list">
+          <li><span>建置時間</span><strong>{{ buildTimeText }}</strong></li>
+          <li><span>離線可用</span><strong>{{ offlineReady ? '是' : '重新載入一次就會好' }}</strong></li>
+        </ul>
+        <p class="hint">
+          手機上打開時如果建置時間跟電腦看到的不一樣，就按上面的「檢查更新並重新載入」。
+        </p>
+      </section>
+    </template>
+
+    <!-- ================= 主畫面 ================= -->
+    <template v-else>
     <header class="head">
       <div class="head-text">
         <h1>付款記錄</h1>
@@ -1689,14 +1919,7 @@ onUnmounted(() => {
       <div class="head-btns">
         <button class="btn" @click="exportBackup">匯出</button>
         <button class="btn" @click="importInputEl.click()">匯入</button>
-        <button
-          class="btn"
-          :class="{ 'is-busy': refreshing }"
-          :aria-disabled="refreshing"
-          @click="refreshApp"
-        >
-          刷新
-        </button>
+        <button class="btn" @click="openSettings">設定</button>
         <button class="btn btn-danger" @click="resetAll">重置</button>
       </div>
       <input
@@ -1897,6 +2120,7 @@ onUnmounted(() => {
         />
       </div>
     </section>
+    </template>
 
     <dialog ref="selfDialogEl" class="dialog" @close="onSelfDialogClose">
       <form @submit.prevent="confirmSelf">
@@ -2180,9 +2404,96 @@ onUnmounted(() => {
   list-style: none;
 }
 
+/* ---------- 設定頁：分類管理與資料統計 ---------- */
+.cat-add {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.cat-add .input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.cat-add .btn {
+  flex: 0 0 auto;
+}
+
+.cat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cat {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.cat-name {
+  min-width: 0;
+  overflow: hidden;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.cat-name:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.cat .btn-icon {
+  flex: 0 0 auto;
+  min-width: 36px;
+  padding: 0 8px;
+}
+
+.stat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stat-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  font-size: 14px;
+}
+
+.stat-list span {
+  color: var(--muted);
+}
+
+.stat-list strong {
+  margin-left: auto;
+  font-weight: 600;
+  text-align: right;
+}
+
 /* 從連結套用（加到主畫面後拿不到網址參數時的補救） */
-.apply-link {
-  margin: 0 0 12px;
+.apply-link {  margin: 0 0 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--surface-2);

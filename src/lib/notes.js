@@ -63,3 +63,33 @@ export function keepNoteCategories(categories, keepAll) {
   const list = normalizeNoteCategories(categories)
   return keepAll ? list : list.filter((c) => c.link)
 }
+
+/** 把第 index 個分類往上／往下移一格（delta = -1 / 1）；移不動就回傳原清單 */
+export function moveNoteCategory(categories, index, delta) {
+  const list = normalizeNoteCategories(categories)
+  const to = index + delta
+  if (index < 0 || index >= list.length || to < 0 || to >= list.length) return list
+  const [item] = list.splice(index, 1)
+  list.splice(to, 0, item)
+  return list
+}
+
+/** 刪掉一個分類 */
+export const removeNoteCategory = (categories, text) =>
+  normalizeNoteCategories(categories).filter((c) => noteKey(c.text) !== noteKey(text))
+
+/**
+ * 把一個分類改名（位置與「從連結來」的標記都保留）。
+ * 改成空的、跟原本一樣、或跟其他分類撞名時回傳 null（呼叫端顯示錯誤）。
+ */
+export function renameNoteCategory(categories, from, to) {
+  const list = normalizeNoteCategories(categories)
+  const name = clean(to)
+  if (!name) return null
+  const index = list.findIndex((c) => noteKey(c.text) === noteKey(from))
+  if (index < 0) return null
+  if (noteKey(name) === noteKey(list[index].text)) return list
+  if (list.some((c, i) => i !== index && noteKey(c.text) === noteKey(name))) return null
+  list[index] = { text: name, link: list[index].link }
+  return list
+}

@@ -332,27 +332,33 @@ function toggleBeneficiary(id) {
 
         <div class="field note-field">
           <span class="lbl">備注</span>
-          <div class="note-row">
-            <input v-model="r.note" class="input" placeholder="例如：公司聚餐" />
+          <span class="note-slot">
+            <input v-model="r.note" class="input note-input" placeholder="例如：公司聚餐" />
+            <!-- 只有按這個圖示才會打開常用分類清單（跟付款時間的日曆按鈕同一個做法） -->
             <button
               type="button"
-              class="btn btn-icon"
+              class="note-pick-btn"
               title="從常用分類挑一個"
+              aria-label="從常用分類挑一個"
               @click="emit('pick-note', r)"
             >
-              分類
+              <svg
+                viewBox="0 0 24 24"
+                width="18"
+                height="18"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M4 7h16" />
+                <path d="M4 12h10" />
+                <path d="M4 17h7" />
+                <path d="M17.5 15.5l3 3-3 3" />
+              </svg>
             </button>
-            <button
-              type="button"
-              class="btn btn-icon"
-              :class="{ 'is-busy': !r.note.trim() }"
-              :aria-disabled="!r.note.trim()"
-              title="把現在的備注存成常用分類"
-              @click="emit('save-note', r.note)"
-            >
-              ＋ 常用
-            </button>
-          </div>
+          </span>
         </div>
       </div>
 
@@ -586,25 +592,43 @@ function toggleBeneficiary(id) {
   font-weight: 550;
 }
 
-/* 備注：輸入框 + 「分類」 + 「＋ 常用」 */
+/* 備注：輸入框（右邊內嵌一個打開常用分類的圖示按鈕） */
 .note-field {
-  /* 佔兩欄，輸入框才不會被兩顆按鈕擠得太窄 */
+  /* 佔兩欄，輸入框才不會太窄 */
   grid-column: span 2;
 }
 
-.note-row {
-  display: flex;
-  gap: 8px;
+.note-slot {
+  position: relative;
+  display: block;
+  width: 100%;
 }
 
-.note-row .input {
-  flex: 1 1 auto;
-  min-width: 0;
+.note-input {
+  width: 100%;
+  padding-right: 40px;
 }
 
-.note-row .btn {
-  flex: 0 0 auto;
-  padding: 0 10px;
+.note-pick-btn {
+  position: absolute;
+  top: 50%;
+  right: 5px;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.note-pick-btn:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 /* 付款時間：一個欄位（兩段式選擇，日期→時間）＋右邊的日曆按鈕 */
@@ -727,19 +751,11 @@ function toggleBeneficiary(id) {
   }
 
   /*
-   * 手機上卡片內文只有 200 多 px，備注的輸入框跟兩顆按鈕擠在同一行會太窄，
-   * 所以讓它換行：輸入框自己一行，兩顆按鈕平分下面那行（也比較好按）。
+   * 手機上卡片內文只有 200 多 px，備注的圖示按鈕內嵌在輸入框裡，
+   * 不會再擠壓輸入框的寬度。
    */
-  .note-row {
-    flex-wrap: wrap;
-  }
-
-  .note-row .input {
-    flex: 1 1 100%;
-  }
-
-  .note-row .btn {
-    flex: 1 1 0;
+  .note-input {
+    font-size: 16px;
   }
 
   /* iOS 對字級小於 16px 的輸入框會在對焦時把整頁放大 */

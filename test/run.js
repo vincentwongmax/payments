@@ -21,8 +21,11 @@ import { labelBySource, parseShareParams, safeFileNamePart, searchFromText, shar
 import {
   DEFAULT_NOTE_CATEGORIES,
   keepNoteCategories,
+  moveNoteCategory,
   noteKey,
   normalizeNoteCategories,
+  removeNoteCategory,
+  renameNoteCategory,
   seedNoteCategories,
 } from '../src/lib/notes.js'
 import {
@@ -752,6 +755,26 @@ assert.deepEqual(
   ['內建', '連結來的'],
 )
 assert.equal(noteKey('  吃_早餐  '), '吃_早餐')
+
+/* 分類管理：上下移、刪除、改名 */
+const catBase = normalizeNoteCategories(['A', 'B', 'C'])
+assert.deepEqual(moveNoteCategory(catBase, 0, 1).map((c) => c.text), ['B', 'A', 'C'])
+assert.deepEqual(moveNoteCategory(catBase, 2, -1).map((c) => c.text), ['A', 'C', 'B'])
+assert.deepEqual(moveNoteCategory(catBase, 0, -1).map((c) => c.text), ['A', 'B', 'C'], '第一筆不能再往上')
+assert.deepEqual(moveNoteCategory(catBase, 2, 1).map((c) => c.text), ['A', 'B', 'C'], '最後一筆不能再往下')
+assert.deepEqual(removeNoteCategory(catBase, 'b').map((c) => c.text), ['A', 'C'], '刪除忽略大小寫')
+assert.deepEqual(renameNoteCategory(catBase, 'B', 'B2').map((c) => c.text), ['A', 'B2', 'C'])
+assert.equal(renameNoteCategory(catBase, 'B', 'A'), null, '跟別的分類撞名要擋下來')
+assert.equal(renameNoteCategory(catBase, 'B', '   '), null, '空白要擋下來')
+assert.deepEqual(
+  renameNoteCategory(catBase, 'B', ' B ').map((c) => c.text),
+  ['A', 'B', 'C'],
+  '只差空白等於沒改',
+)
+const linkedCats = normalizeNoteCategories([{ text: 'X', link: true }, 'Y'])
+const renamedCats = renameNoteCategory(linkedCats, 'X', 'Z')
+assert.deepEqual(renamedCats.map((c) => c.text), ['Z', 'Y'], '改名保留位置')
+assert.equal(renamedCats[0].link, true, '改名保留「從連結來」的標記')
 
 /* ---------- PWA：離線可用需要的檔案 ---------- */
 const root = new URL('..', import.meta.url)
