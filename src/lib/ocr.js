@@ -3,7 +3,9 @@
 
 const CURRENCY_RULES = [
   ['MOP', /MOP|澳門幣|澳門元|葡幣|PATACA/i],
-  ['CNY', /CNY|RMB|人民幣|￥|¥/i],
+  /* \by 與「羊」都是實測看到的 ¥ 誤讀（「合計 y 46.39」）。\b 保證 y 是
+     獨立的一個字，不會把 Delivery、Today 這種字尾的 y 當成幣別。 */
+  ['CNY', /CNY|RMB|人民幣|￥|¥|\by|羊/i],
   ['HKD', /HKD|港幣|港元/i],
   ['TWD', /TWD|NT\$|新台幣|台幣/i],
   ['USD', /USD|US\$|美元/i],
@@ -27,7 +29,7 @@ const STRONG_WORDS = [
   '小计', '小計', '应付', '應付', '金额', '金額', 'amount', 'total',
 ]
 const STRONG_TAIL = new RegExp(
-  `(?:${looseAny(STRONG_WORDS)})\\s*[:：]?\\s*(?:[¥￥$]|[A-Z]{3})?\\s*$`,
+  `(?:${looseAny(STRONG_WORDS)})\\s*[:：]?\\s*(?:[¥￥$]|[A-Z]{3}|\\by|羊)?\\s*$`,
   'i',
 )
 
@@ -51,33 +53,55 @@ const CURRENCY_CODES = /^(CNY|RMB|MOP|HKD|USD|TWD|JPY|EUR|GBP|SGD|AUD|KRW|MYR|TH
 const MAX_AMOUNT = 1e7
 const NUMBER_RE = /\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+\.\d{1,2}|\d+/g
 
+/* 數量詞：數字後面接這些字就是「幾個」而不是「多少錢」 */
+const QUANTITY_AFTER = /^[件个個次张張条條支瓶杯盒包份台位名分秒折倍点點号號笔筆单單%]/
+
 /**
  * 從 tesseract 的文字框算出「每個數字有多大」。
  * 用數字字元本身高度的中位數，不用整框高度——整框會被標點灌水
  * （實測折扣那行 `-#0.07` 整框 59，但數字其實只有 32）。
+ * 同一個數值在畫面上常出現很多次（縮圖裡的字、列表、標題），最後再取一次
+ * 中位數：取最大值的話，只要有一次被讀成超大字，真正的金額就會被壓下去
+ * （實測 IMG_2844「共5件，合計¥46.39」的 5 被讀成 67，46.39 只有 40）。
  */
 export function extractHeights(data) {
-  const heights = new Map()
-  const words = (data?.blocks ?? [])
+  const seen = new Map()
+  const lines = (data?.blocks ?? [])
     .flatMap((block) => block.paragraphs ?? [])
     .flatMap((p) => p.lines ?? [])
-    .flatMap((line) => line.words ?? [])
 
-  for (const word of words) {
-    const digitHeights = (word.symbols ?? [])
-      .filter((s) => /\d/.test(s.text))
-      .map((s) => s.bbox.y1 - s.bbox.y0)
-      .sort((a, b) => a - b)
-    if (!digitHeights.length) continue
-    const height = digitHeights[Math.floor(digitHeights.length / 2)]
+  for (const line of lines) {
+    const words = line.words ?? []
+    for (let i = 0; i < words.length; i++) {
+      const word = words[i]
+      const digitHeights = (word.symbols ?? [])
+        .filter((s) => /\d/.test(s.text))
+        .map((s) => s.bbox.y1 - s.bbox.y0)
+        .sort((a, b) => a - b)
+      if (!digitHeights.length) continue
+      const height = digitHeights[Math.floor(digitHeights.length / 2)]
 
-    NUMBER_RE.lastIndex = 0
-    let m
-    while ((m = NUMBER_RE.exec(word.text ?? ''))) {
-      const value = Number(m[0].replace(/,/g, ''))
-      if (!Number.isFinite(value)) continue
-      if ((heights.get(value) ?? 0) < height) heights.set(value, height)
+      NUMBER_RE.lastIndex = 0
+      let m
+      while ((m = NUMBER_RE.exec(word.text ?? ''))) {
+        const value = Number(m[0].replace(/,/g, ''))
+        if (!Number.isFinite(value)) continue
+        /* 後面接著數量詞（共5件、1個、3次）代表這是「幾個」不是金額，
+           它的字框常常特別大，不要拿來當金額的字級 */
+        const rest = (word.text ?? '').slice(m.index + m[0].length)
+        if (QUANTITY_AFTER.test(rest) || QUANTITY_AFTER.test(words[i + 1]?.text ?? '')) continue
+
+        const list = seen.get(value)
+        if (list) list.push(height)
+        else seen.set(value, [height])
+      }
     }
+  }
+
+  const heights = new Map()
+  for (const [value, list] of seen) {
+    list.sort((a, b) => a - b)
+    heights.set(value, list[Math.floor(list.length / 2)])
   }
   return heights
 }
@@ -214,18 +238,32 @@ export function parsePaymentText(text, heights) {
   }
 
   const seen = new Set()
-  const unique = amounts
-    .filter((a) => {
+  const unique = dropDotlessTwins(
+    amounts.filter((a) => {
       const key = `${a.currency}:${a.value}`
       if (seen.has(key)) return false
       seen.add(key)
       return true
-    })
+    }),
+  )
     /* 字級大的優先：付款畫面會把實際付款金額放最大，小字的是訂單金額或折扣 */
     .sort((a, b) => b.height - a.height || b.score - a.score || b.value - a.value)
     .slice(0, 6)
 
   return { dates, amounts: unique }
+}
+
+/* OCR 常常把小數點讀丟（8.92 讀成 892）。同一個數字如果在畫面上同時出現
+   「有小數點」和「沒小數點」兩種讀法，可信的是有小數點的那個——tesseract
+   幾乎不會無中生有生出一個點，但漏掉一個點很常見（實測 IMG_2845 的
+   「实付 ¥8.92」被讀成 892，而「拼单价 ¥8.92」讀對了）。 */
+const digitsOf = (text) => String(text).replace(/\D/g, '')
+
+export function dropDotlessTwins(amounts) {
+  const textOf = (a) => String(a.text ?? a.value)
+  const dotted = new Set(amounts.filter((a) => textOf(a).includes('.')).map((a) => digitsOf(textOf(a))))
+  if (!dotted.size) return amounts
+  return amounts.filter((a) => textOf(a).includes('.') || !dotted.has(digitsOf(textOf(a))))
 }
 
 /** 挑出最可信的付款時間：有時間的優先。 */
@@ -278,7 +316,7 @@ export function mergeParsed(results) {
 
   return {
     dates: uniqueDates,
-    amounts: [...amountByKey.values()]
+    amounts: dropDotlessTwins([...amountByKey.values()])
       .sort((a, b) => b.height - a.height || b.score - a.score || b.value - a.value)
       .slice(0, 6),
   }
@@ -370,8 +408,44 @@ const toPass = (result) => ({
   heights: extractHeights(result?.data),
 })
 
+/**
+ * 餵給 OCR 之前先轉灰階。
+ * 實測同一張支付寶截圖：彩色原圖整張進去，藍底白字的上半部（付款成功、
+ * 金額、收款方）一個字都讀不到，只剩下面白底的廣告；轉成灰階後整張都讀得到。
+ * 反相也有效，但灰階對原本就讀得到的白底黑字最中性。
+ * 轉不出來（記憶體不足、瀏覽器不支援）就退回原圖，不讓辨識整個失敗。
+ */
+async function grayImage(image) {
+  let bitmap = null
+  try {
+    bitmap = await createImageBitmap(image)
+    const canvas = document.createElement('canvas')
+    canvas.width = bitmap.width
+    canvas.height = bitmap.height
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
+    if (!ctx) return image
+    ctx.drawImage(bitmap, 0, 0)
+    bitmap.close?.()
+    bitmap = null
+
+    const data = ctx.getImageData(0, 0, canvas.width, canvas.height)
+    const p = data.data
+    for (let i = 0; i < p.length; i += 4) {
+      const v = (p[i] * 299 + p[i + 1] * 587 + p[i + 2] * 114) / 1000
+      p[i] = p[i + 1] = p[i + 2] = v
+    }
+    ctx.putImageData(data, 0, 0)
+    return canvas
+  } catch {
+    return image
+  } finally {
+    bitmap?.close?.()
+  }
+}
+
 export async function recognizePasses(image, onProgress) {
   tick = (pass, m) => onProgress?.(m, pass, OCR_PASSES.length)
+  const input = await grayImage(image)
 
   try {
     const workers = await withTimeout(getWorkers(), OCR_TIMEOUT_MS * 2, '載入 OCR 引擎')
@@ -382,7 +456,7 @@ export async function recognizePasses(image, onProgress) {
       for (let pass = 0; pass < OCR_PASSES.length; pass++) {
         await workers[0].setParameters({ tessedit_pageseg_mode: OCR_PASSES[pass] })
         const result = await withTimeout(
-          workers[0].recognize(image, {}, OCR_OUTPUT),
+          workers[0].recognize(input, {}, OCR_OUTPUT),
           OCR_TIMEOUT_MS,
           `辨識圖片（模式 ${OCR_PASSES[pass]}）`,
         )
@@ -394,7 +468,7 @@ export async function recognizePasses(image, onProgress) {
     const results = await Promise.all(
       workers.map((worker, pass) =>
         withTimeout(
-          worker.recognize(image, {}, OCR_OUTPUT),
+          worker.recognize(input, {}, OCR_OUTPUT),
           OCR_TIMEOUT_MS,
           `辨識圖片（模式 ${OCR_PASSES[pass]}）`,
         ),

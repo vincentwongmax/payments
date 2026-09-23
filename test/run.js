@@ -211,6 +211,71 @@ assert.equal(twoCurrencies.amounts.length, 2, '不同幣別都要保留')
 assert.equal(twoCurrencies.amounts[0].value, 192.74)
 assert.equal(pickDefaultAmount(twoCurrencies.amounts, 'CNY').value, 158, '指定幣別優先於字級')
 
+/* 小數點被讀丟時（8.92 讀成 892），留有小數點的那個 */
+const dotTwins = parsePaymentText(
+  `拼单价 ¥8.92\n实付 ¥892`,
+  new Map([
+    [892, 44],
+    [8.92, 35],
+  ]),
+)
+assert.equal(dotTwins.amounts.length, 1, '同一個數字的無小數點讀法要丟掉')
+assert.equal(dotTwins.amounts[0].value, 8.92)
+assert.equal(pickDefaultAmount(dotTwins.amounts, 'CNY').value, 8.92, '預設要是 8.92 而不是 892')
+
+/* 合併兩個模式時也適用 */
+const dotTwinsMerged = mergeParsed([
+  { dates: [], amounts: [{ currency: 'CNY', value: 892, text: '892', labeled: false, score: 5, height: 44 }] },
+  { dates: [], amounts: [{ currency: 'CNY', value: 8.92, text: '8.92', labeled: false, score: 3, height: 35 }] },
+])
+assert.equal(dotTwinsMerged.amounts.length, 1)
+assert.equal(dotTwinsMerged.amounts[0].value, 8.92)
+
+/* 同一個數字出現很多次時取中位數，不能被某一次的異常大字拉走 */
+const digitWord = (text, height) => ({
+  text,
+  bbox: { x0: 0, y0: 0, x1: 10, y1: height },
+  symbols: [{ text: (text.match(/\d/) ?? ['1'])[0], bbox: { x0: 0, y0: 0, x1: 10, y1: height } }],
+})
+const medianHeights = extractHeights({
+  blocks: [
+    {
+      paragraphs: [
+        {
+          lines: [
+            { words: [digitWord('5', 67), digitWord('-¥5', 35), digitWord('5', 28)] },
+          ],
+        },
+      ],
+    },
+  ],
+})
+assert.equal(medianHeights.get(5), 35, '取中位數，不是最大值')
+
+/* 「共5件」的 5 不是金額，它的字框不能算進來（實測會被讀成 67） */
+const quantityHeights = extractHeights({
+  blocks: [
+    {
+      paragraphs: [
+        {
+          lines: [{ words: [digitWord('5', 67), digitWord('件', 20), digitWord('46.39', 40)] }],
+        },
+      ],
+    },
+  ],
+})
+assert.equal(quantityHeights.get(5), undefined, '數量詞前面的數字不算金額的字級')
+assert.equal(quantityHeights.get(46.39), 40, '同一行的金額不受影響')
+
+/* ¥ 被讀成 y 或羊時還是要認得出來 */
+const misreadYen = parsePaymentText('共 5 件 , 合 计 y 46.39\n实付 羊 12.30')
+assert.equal(misreadYen.amounts[0].value, 46.39)
+assert.equal(misreadYen.amounts[0].currency, 'CNY')
+assert.equal(misreadYen.amounts[0].labeled, true, 'y 要當成 ¥，前面的「合计」才算標籤')
+assert.equal(misreadYen.amounts[1].currency, 'CNY')
+/* 英文字尾的 y 不能被當成幣別 */
+assert.equal(parsePaymentText('Delivery 5').amounts.length, 0)
+
 /* 合併兩種模式時，同一個金額取字級較大的描述 */
 const mergedByHeight = mergeParsed([
   { dates: [], amounts: [{ currency: 'CNY', value: 95, labeled: false, score: 1, height: 20 }] },
