@@ -592,12 +592,7 @@ function toggleBeneficiary(id) {
   font-weight: 550;
 }
 
-/* 備注：輸入框（右邊內嵌一個打開常用分類的圖示按鈕） */
-.note-field {
-  /* 佔兩欄，輸入框才不會太窄 */
-  grid-column: span 2;
-}
-
+/* 備注：輸入框（右邊內嵌一個打開常用分類的圖示按鈕），寬度跟其他欄位一樣 */
 .note-slot {
   position: relative;
   display: block;
