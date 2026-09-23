@@ -35,21 +35,26 @@ body {
 /*
  * iPhone：連續快點按鈕時 Safari 會把整個畫面放大，很干擾。
  * touch-action: manipulation 只關掉「雙擊縮放」，雙指縮放和滑動都還在。
- * 放在 html 上等於整頁都不會因為雙擊而放大（子元素的有效值會跟祖先取交集）。
+ *
+ * 這裡用 * 而不是只設按鈕：按鈕在按下之後會變成 disabled，第二次點就落到
+ * 後面的 div（div 的 touch-action 是 auto），Safari 對非互動元素的
+ * touch-action 支援並不牢靠，所以整棵樹都設，雙擊就不會再放大。
  */
-html {
+* {
   touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html {
+  /* Android 的字型自動放大也會讓畫面看起來「變大」 */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 button,
-input,
-select,
-textarea,
-label,
-a,
-summary,
 [role='button'] {
-  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 body {

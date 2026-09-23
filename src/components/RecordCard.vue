@@ -154,6 +154,14 @@ const statusKind = (rec) => {
 /* 失敗或已跳過的，可以點標籤重新辨識 */
 const canRetry = (rec) => rec.ocrStatus === 'error' || rec.ocrStatus === 'skipped'
 
+/* 人物清單裡找不到的付錢人／受益人（自動補不回來的那種） */
+const payerGone = computed(
+  () => !!r.value.payerId && !props.persons.some((p) => p.id === r.value.payerId),
+)
+const goneBeneficiaries = computed(() =>
+  (r.value.beneficiaryIds ?? []).filter((id) => !props.persons.some((p) => p.id === id)).length,
+)
+
 const allSelected = computed(
   () =>
     props.persons.length > 0 &&
@@ -252,6 +260,8 @@ function toggleBeneficiary(id) {
           <span class="lbl">付錢人</span>
           <select v-model="r.payerId" class="input" :disabled="!persons.length">
             <option value="">{{ persons.length ? '請選擇' : '請先新增人物' }}</option>
+            <!-- 記錄指到的人物已經不在清單裡（補不回來時）：至少要看得出這一筆有問題 -->
+            <option v-if="payerGone" :value="r.payerId">⚠ 找不到這位人物，請重新選擇</option>
             <option v-for="p in persons" :key="p.id" :value="p.id">
               {{ p.name }}{{ p.isSelf ? '（自己）' : '' }}
             </option>
@@ -348,6 +358,9 @@ function toggleBeneficiary(id) {
           </button>
         </div>
         <p v-else class="hint">還沒有可選的人物。</p>
+        <p v-if="goneBeneficiaries" class="hint">
+          有 {{ goneBeneficiaries }} 位受益人已經不在人物清單裡，請重新選擇。
+        </p>
       </div>
 
       <div v-if="r.amounts?.length > 1" class="field">

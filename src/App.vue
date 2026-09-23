@@ -6,6 +6,7 @@ import { clear, del, getAll, put, wipe } from './lib/db.js'
 import { compressImage, extFromMime, fileToStored, heicToJpeg, isHeic, readImageTime, sniffImageType, storedToFile } from './lib/image.js'
 import { hashFile } from './lib/md5.js'
 import { mergeParsed, parsePaymentText, pickDate, pickDefaultAmount, preloadOcr, recognizePasses } from './lib/ocr.js'
+import { missingPersonIds, personNameSnapshot, recordsUsingPerson, restoreMissingPersons } from './lib/persons.js'
 import { fmtDateTime, labelBySource, parseShareParams, safeFileNamePart, shareLinkKey, uid } from './lib/util.js'
 
 /* ---------- 人物 ---------- */
@@ -84,14 +85,26 @@ function savePerson() {
 }
 
 function removePerson(person) {
+  /* 記錄還在用他（付錢人或受益人）就不能刪，不然那些記錄會變成找不到人 */
+  const used = recordsUsingPerson(records.value, person.id)
+  if (used.length) {
+    actionNotice.value =
+      `「${person.name}」還有 ${used.length} 筆記錄在用（付錢人或受益人），不能刪除。\n` +
+      '如果不再需要這位，請先把那些記錄改成別人。'
+    return
+  }
+
   if (!confirm(`確定要刪除「${person.name}」嗎？`)) return
   persons.value = persons.value.filter((p) => p.id !== person.id)
-  /* 記錄裡指向他的欄位也要清掉，避免留下無效的 id */
+  /* 保險：記錄裡指向他的欄位也要清掉，避免留下無效的 id */
   records.value.forEach((r) => {
     if (r.payerId === person.id) r.payerId = defaultPayerId.value
     r.beneficiaryIds = r.beneficiaryIds.filter((id) => id !== person.id)
   })
 }
+
+/* 人物列上的「N 筆」標籤：一眼看出誰被記錄用到（也就不能刪） */
+const usedCount = (person) => recordsUsingPerson(records.value, person.id).length
 
 /* ---------- 還沒有「自己」就先問 ---------- */
 const selfDialogEl = ref(null)
@@ -991,6 +1004,8 @@ async function refreshApp() {
   } catch {
     /* 隱私模式之類的：直接重載就好 */
   }
+  /* 重載沒有發生（例如被擋下來）也要把按鈕恢復成可以按 */
+  refreshing.value = false
   location.reload()
 }
 
@@ -1254,6 +1269,8 @@ function serializeRecord(r) {
     paidAtManual: r.paidAtManual,
     payerId: r.payerId,
     beneficiaryIds: [...r.beneficiaryIds],
+    /* 人物名字的快照：人物不見時才有辦法把他補回來（見 lib/persons.js） */
+    personNames: personNameSnapshot(r, persons.value),
     note: r.note,
   }
 }
@@ -1362,6 +1379,26 @@ onMounted(async () => {
         }
       })
     seqCounter = records.value.reduce((max, r) => Math.max(max, r.seq ?? 0), 0)
+    /*
+     * 記錄指到的人物不見了（匯入對不到、資料寫到一半中斷…）就自動補回來，
+     * 名字用記錄裡存的快照。補不回來的（舊資料沒有名字）只提示，不亂補。
+     */
+    const healed = restoreMissingPersons(persons.value, records.value)
+    if (healed.restored.length) persons.value = healed.persons
+    const stillMissing = records.value.filter((r) => missingPersonIds(persons.value, r).length)
+    const personNotices = []
+    if (healed.restored.length) {
+      personNotices.push(
+        `已自動補回 ${healed.restored.length} 位人物：${healed.restored.map((p) => p.name).join('、')}`,
+      )
+    }
+    if (stillMissing.length) {
+      personNotices.push(
+        `${stillMissing.length} 筆記錄的付錢人或受益人不在人物清單裡，` +
+          '而且沒有留下名字可以補回來，請在那幾筆記錄上重新選擇。',
+      )
+    }
+    if (personNotices.length) actionNotice.value = personNotices.join('\n')
     defaultCurrency.value = settings.find((s) => s.id === 'defaultCurrency')?.value ?? ''
     const links = settings.find((s) => s.id === 'appliedShareLinks')?.value
     appliedLinks = Array.isArray(links) ? links : []
@@ -1471,6 +1508,9 @@ onUnmounted(() => {
           <span class="avatar" aria-hidden="true">{{ p.name.slice(0, 1) }}</span>
           <span class="person-name">{{ p.name }}</span>
           <span v-if="p.isSelf" class="tag">自己</span>
+          <span v-if="usedCount(p)" class="tag tag-used" :title="`有 ${usedCount(p)} 筆記錄用到，不能刪除`">
+            {{ usedCount(p) }} 筆
+          </span>
           <span v-if="p.aliases?.length" class="aliases" :title="p.aliases.join('、')">
             別名 {{ p.aliases.join('、') }}
           </span>
@@ -1890,6 +1930,13 @@ onUnmounted(() => {
   color: var(--accent);
   font-size: 12px;
   font-weight: 600;
+}
+
+/* 有記錄用到的人物：不能刪除 */
+.tag-used {
+  background: var(--warn-soft);
+  color: var(--warn);
+  flex: 0 0 auto;
 }
 
 .aliases {

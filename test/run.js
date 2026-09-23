@@ -18,6 +18,12 @@ import {
   pickDefaultAmount,
 } from '../src/lib/ocr.js'
 import { labelBySource, parseShareParams, safeFileNamePart, shareLinkKey } from '../src/lib/util.js'
+import {
+  missingPersonIds,
+  personNameSnapshot,
+  recordsUsingPerson,
+  restoreMissingPersons,
+} from '../src/lib/persons.js'
 import { md5Hex } from '../src/lib/md5.js'
 import { fromBackup, mergeRecords, remapRecords, resolvePersons, toBackup } from '../src/lib/backup.js'
 
@@ -637,6 +643,43 @@ assert.equal(extFromMime('image/jpeg'), 'jpg')
 assert.equal(extFromMime('image/png'), 'png')
 assert.equal(extFromMime('image/heic'), 'heic')
 assert.equal(extFromMime('something-else'), 'png')
+
+/* ---------- 人物與記錄的關聯 ---------- */
+const recA = { id: 'r1', payerId: 'p1', beneficiaryIds: ['p2', 'p3'] }
+const recB = { id: 'r2', payerId: 'p2', beneficiaryIds: [] }
+assert.equal(recordsUsingPerson([recA, recB], 'p1').length, 1, '付款人也算用到')
+assert.equal(recordsUsingPerson([recA, recB], 'p3').length, 1, '受益人也算用到')
+assert.equal(recordsUsingPerson([recA, recB], 'p2').length, 2, '兩種身分都算')
+assert.equal(recordsUsingPerson([recA, recB], 'p9').length, 0, '沒用到就沒有')
+assert.equal(recordsUsingPerson([recA, recB], '').length, 0, '空 id 不算')
+
+const people = [
+  { id: 'p1', name: 'Vincent' },
+  { id: 'p2', name: 'Ben' },
+]
+assert.deepEqual(
+  personNameSnapshot(recA, people),
+  { p1: 'Vincent', p2: 'Ben' },
+  '快照只存認得出來的名字（p3 不在清單裡就不存）',
+)
+
+/* 人物不見了：有名字快照就補回來，沒名字的不亂補 */
+const dangling = [
+  { id: 'r1', payerId: 'pX', beneficiaryIds: ['p1'], personNames: { pX: '阿明' } },
+  { id: 'r2', payerId: 'pY', beneficiaryIds: [], personNames: {} },
+]
+const healed = restoreMissingPersons(people, dangling)
+assert.equal(healed.restored.length, 1, '只有有名字的補回來')
+assert.equal(healed.restored[0].name, '阿明')
+assert.equal(healed.persons.length, 3)
+assert.equal(healed.persons.filter((p) => p.id === 'p3').length, 0, '不重複補')
+assert.deepEqual(
+  restoreMissingPersons(healed.persons, dangling).restored.length,
+  0,
+  '補過就不再補一次',
+)
+assert.deepEqual(missingPersonIds(people, dangling[0]), ['pX'], '還缺的 id 要能查出來')
+assert.deepEqual(missingPersonIds(healed.persons, dangling[0]), [], '補回來之後就不缺了')
 
 /* ---------- PWA：離線可用需要的檔案 ---------- */
 const root = new URL('..', import.meta.url)
