@@ -966,6 +966,34 @@ const onViewerImageClick = () => {
   if (window.matchMedia?.('(max-width: 560px)').matches) viewerEl.value?.close()
 }
 
+/* ---------- 刷新：加到手機主畫面之後沒有網址列，也沒有下拉重新整理 ---------- */
+const refreshing = ref(false)
+
+async function refreshApp() {
+  if (refreshing.value) return
+  refreshing.value = true
+  try {
+    /* 先問 Service Worker 有沒有新版，有就等它接手再重載，這樣才會真的更新 */
+    const reg = navigator.serviceWorker?.getRegistration
+      ? await navigator.serviceWorker.getRegistration()
+      : null
+    if (reg) {
+      await reg.update().catch(() => {})
+      if (reg.installing || reg.waiting) {
+        await Promise.race([
+          new Promise((resolve) =>
+            navigator.serviceWorker.addEventListener('controllerchange', resolve, { once: true }),
+          ),
+          new Promise((resolve) => setTimeout(resolve, 3000)),
+        ])
+      }
+    }
+  } catch {
+    /* 隱私模式之類的：直接重載就好 */
+  }
+  location.reload()
+}
+
 /* ---------- 重置：什麼都不留 ---------- */
 async function resetAll() {
   const ok = confirm(
@@ -1381,6 +1409,7 @@ onUnmounted(() => {
       <div class="head-btns">
         <button class="btn" @click="exportBackup">匯出</button>
         <button class="btn" @click="importInputEl.click()">匯入</button>
+        <button class="btn" :disabled="refreshing" @click="refreshApp">刷新</button>
         <button class="btn btn-danger" @click="resetAll">重置</button>
       </div>
       <input
