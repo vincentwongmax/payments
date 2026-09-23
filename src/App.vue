@@ -198,25 +198,24 @@ function onTouchEnd(event) {
 }
 
 /*
- * 手動套用分享連結：iOS 加到主畫面的 App 可能拿不到網址上的參數
- * （見 manifest.json 的說明），那就在這裡把連結貼進來補。
+ * 手動套用分享連結：貼上的內容會存在本機（settings 的 shareLinkText），
+ * 使用者沒有改的話就一直在輸入框裡，連「重置」也不會清掉。
  */
 const linkInput = ref('')
 
 function applyLinkInput() {
   const search = searchFromText(linkInput.value)
-  const { names, currency } = parseShareParams(search)
-  if (!names.length && !currency) {
+  const { names, currency, notes } = parseShareParams(search)
+  if (!names.length && !currency && !notes.length) {
     backupNotice.value =
-      '這個連結裡沒有可用的人物或幣別。要像這樣：…?persons=Vincent,Ben&currency=CNY'
+      '這個連結裡沒有可用的人物、幣別或備注分類。要像這樣：…?persons=Vincent,Ben&currency=CNY&notes=吃_早餐'
     return
   }
 
   const result = applyShareParams(search, true)
-  if (!result.added.length && !result.currencySet) {
-    backupNotice.value = `連結裡的人物與幣別都已經有了（${[...names, currency].filter(Boolean).join('、')}）`
+  if (!result.added.length && !result.currencySet && !result.notesAdded.length) {
+    backupNotice.value = `連結裡的內容都已經有了（${[...names, currency, ...notes].filter(Boolean).join('、')}）`
   }
-  linkInput.value = ''
 }
 
 /* ---------- 還沒有「自己」就先問 ---------- */
@@ -1655,6 +1654,8 @@ async function persist() {
     await put('settings', { id: 'defaultCurrency', value: defaultCurrency.value })
     await put('settings', { id: 'manualCounter', value: manualCounter })
     await put('settings', { id: 'noteCategories', value: noteCategories.value.map((c) => ({ ...c })) })
+    /* 貼上的分享連結：使用者沒改就一直留著，重置也保留（見 resetAll） */
+    await put('settings', { id: 'shareLinkText', value: linkInput.value })
     storageError.value = ''
   } catch (e) {
     storageError.value = `資料無法存到本機：${e?.message ?? e}`
@@ -1663,7 +1664,7 @@ async function persist() {
 
 let saveTimer
 watch(
-  [records, persons, defaultCurrency, noteCategories],
+  [records, persons, defaultCurrency, noteCategories, linkInput],
   () => {
     clearTimeout(saveTimer)
     saveTimer = setTimeout(persist, 300)
@@ -1737,6 +1738,8 @@ onMounted(async () => {
     /* 備注分類：第一次用給預設清單，之後以存下來的為準 */
     const savedNotes = settings.find((s) => s.id === 'noteCategories')?.value
     if (Array.isArray(savedNotes)) noteCategories.value = normalizeNoteCategories(savedNotes)
+    /* 上次貼上的分享連結：使用者沒改就一直在（重置也不會清掉） */
+    linkInput.value = settings.find((s) => s.id === 'shareLinkText')?.value ?? ''
     const links = settings.find((s) => s.id === 'appliedShareLinks')?.value
     appliedLinks = Array.isArray(links) ? links : []
     /* 手動新增的編號接續舊資料（沒有編號的「手動新增」不算），號碼不重用 */
@@ -1795,63 +1798,105 @@ onUnmounted(() => {
         <button type="button" class="link" @click="backupNotice = ''">知道了</button>
       </p>
 
+      <!-- 分類管理：平常收起來，按標題才展開 -->
+      <section class="card">
+        <details class="fold">
+          <summary>
+            <span class="fold-title">備注分類管理</span>
+            <span class="count">{{ noteCategories.length }}</span>
+          </summary>
+          <div class="fold-body">
+            <p class="hint">
+              這些是備注欄位右邊圖示按下去會出現的常用分類。點名稱可以改名，箭頭調整順序。
+            </p>
+
+            <div class="cat-add">
+              <input
+                v-model="newCategory"
+                class="input"
+                placeholder="輸入新的分類名稱…"
+                @keyup.enter="addCategoryFromInput"
+              />
+              <button
+                class="btn btn-primary"
+                :class="{ 'is-busy': !newCategory.trim() }"
+                :aria-disabled="!newCategory.trim()"
+                @click="addCategoryFromInput"
+              >
+                新增
+              </button>
+            </div>
+
+            <p v-if="!noteCategories.length" class="empty">還沒有任何分類，先在上面輸入一個。</p>
+
+            <ul v-else class="cat-list">
+              <li v-for="(c, i) in noteCategories" :key="`${c.text}-${i}`" class="cat">
+                <button type="button" class="cat-name" title="點一下改名" @click="renameCategory(c.text)">
+                  {{ c.text }}
+                </button>
+                <span v-if="c.link" class="tag">連結</span>
+                <span class="spacer" />
+                <button
+                  class="btn btn-icon"
+                  :class="{ 'is-busy': i === 0 }"
+                  :aria-disabled="i === 0"
+                  title="往上移"
+                  @click="moveCategory(i, -1)"
+                >
+                  ↑
+                </button>
+                <button
+                  class="btn btn-icon"
+                  :class="{ 'is-busy': i === noteCategories.length - 1 }"
+                  :aria-disabled="i === noteCategories.length - 1"
+                  title="往下移"
+                  @click="moveCategory(i, 1)"
+                >
+                  ↓
+                </button>
+                <button class="btn btn-icon btn-danger" title="刪除" @click="deleteCategory(c.text)">
+                  刪除
+                </button>
+              </li>
+            </ul>
+          </div>
+        </details>
+      </section>
+
       <section class="card">
         <div class="card-head card-head-inline">
-          <h2>備注分類管理 <span class="count">{{ noteCategories.length }}</span></h2>
+          <h2>分享連結</h2>
         </div>
         <p class="hint">
-          這些是備注欄位右邊圖示按下去會出現的常用分類。點名稱可以改名，箭頭調整順序。
+          貼上分享連結可以把人物、預設幣別與備注分類一次帶進來（例如
+          <code>?persons=Vincent,Ben&amp;currency=CNY&amp;notes=吃_早餐</code>）。
+          加到手機主畫面的 App 有可能讀不到網址上的參數，就在這裡貼。
         </p>
-
-        <div class="cat-add">
+        <div class="apply-link-row">
           <input
-            v-model="newCategory"
+            v-model="linkInput"
             class="input"
-            placeholder="輸入新的分類名稱…"
-            @keyup.enter="addCategoryFromInput"
+            type="text"
+            inputmode="url"
+            autocapitalize="off"
+            autocorrect="off"
+            spellcheck="false"
+            placeholder="貼上分享連結…"
+            @keyup.enter="applyLinkInput"
           />
           <button
             class="btn btn-primary"
-            :class="{ 'is-busy': !newCategory.trim() }"
-            :aria-disabled="!newCategory.trim()"
-            @click="addCategoryFromInput"
+            :class="{ 'is-busy': !linkInput.trim() }"
+            :aria-disabled="!linkInput.trim()"
+            @click="applyLinkInput"
           >
-            新增
+            套用
           </button>
         </div>
-
-        <p v-if="!noteCategories.length" class="empty">還沒有任何分類，先在上面輸入一個。</p>
-
-        <ul v-else class="cat-list">
-          <li v-for="(c, i) in noteCategories" :key="`${c.text}-${i}`" class="cat">
-            <button type="button" class="cat-name" :title="'點一下改名'" @click="renameCategory(c.text)">
-              {{ c.text }}
-            </button>
-            <span v-if="c.link" class="tag">連結</span>
-            <span class="spacer" />
-            <button
-              class="btn btn-icon"
-              :class="{ 'is-busy': i === 0 }"
-              :aria-disabled="i === 0"
-              title="往上移"
-              @click="moveCategory(i, -1)"
-            >
-              ↑
-            </button>
-            <button
-              class="btn btn-icon"
-              :class="{ 'is-busy': i === noteCategories.length - 1 }"
-              :aria-disabled="i === noteCategories.length - 1"
-              title="往下移"
-              @click="moveCategory(i, 1)"
-            >
-              ↓
-            </button>
-            <button class="btn btn-icon btn-danger" title="刪除" @click="deleteCategory(c.text)">
-              刪除
-            </button>
-          </li>
-        </ul>
+        <p class="hint">
+          貼上的內容會留在這個框裡（除非你自己改掉或清空），**重置也不會消失**；
+          從連結帶進來的備注分類也一樣會保留。
+        </p>
       </section>
 
       <section class="card">
@@ -1972,39 +2017,9 @@ onUnmounted(() => {
         <button class="btn btn-primary" @click="openCreatePerson">新增人物</button>
       </div>
 
-      <!-- 只有在一個人物都沒有的時候才出現（加到手機主畫面常常就是這種情況） -->
-      <details v-if="!persons.length" class="apply-link" open>
-        <summary>從連結套用（人物／幣別／備注分類）</summary>
-        <div class="apply-link-row">
-          <input
-            v-model="linkInput"
-            class="input"
-            type="text"
-            inputmode="url"
-            autocapitalize="off"
-            autocorrect="off"
-            spellcheck="false"
-            placeholder="貼上分享連結…"
-            @keyup.enter="applyLinkInput"
-          />
-          <button
-            class="btn"
-            :class="{ 'is-busy': !linkInput.trim() }"
-            :aria-disabled="!linkInput.trim()"
-            @click="applyLinkInput"
-          >
-            套用
-          </button>
-        </div>
-        <p class="hint">
-          例如 <code>?persons=Vincent,Ben&amp;currency=CNY&amp;notes=吃_早餐,打車(去程)</code>。
-          加到手機主畫面的 App 有可能讀不到網址上的參數，把原本那個連結貼在這裡就會補回來；
-          從連結加進來的備注分類會永久保留（重置也不會消失）。
-        </p>
-      </details>
-
       <p v-if="!persons.length" class="empty">
-        還沒有任何人物。先新增一位並勾選「這是我自己」，之後的付款人預設就是他。
+        還沒有任何人物。先新增一位並勾選「這是我自己」，之後的付款人預設就是他；
+        也可以到「設定」貼上分享連結，一次把人物、幣別與備注分類帶進來。
       </p>
 
       <ul v-else class="people">
@@ -2404,7 +2419,44 @@ onUnmounted(() => {
   list-style: none;
 }
 
-/* ---------- 設定頁：分類管理與資料統計 ---------- */
+/* ---------- 設定頁：可收合區塊、分類管理與資料統計 ---------- */
+.fold summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.fold summary::-webkit-details-marker {
+  display: none;
+}
+
+.fold-title {
+  font-size: 16px;
+  font-weight: 640;
+}
+
+/* 收合指示：收起時指右邊，展開時指下面 */
+.fold summary::after {
+  content: '';
+  margin-left: auto;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(-45deg);
+  transition: transform 0.15s;
+}
+
+.fold[open] summary::after {
+  transform: rotate(45deg);
+}
+
+.fold-body {
+  margin-top: 12px;
+}
+
 .cat-add {
   display: flex;
   gap: 8px;
@@ -2492,25 +2544,10 @@ onUnmounted(() => {
   text-align: right;
 }
 
-/* 從連結套用（加到主畫面後拿不到網址參數時的補救） */
-.apply-link {  margin: 0 0 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-}
-
-.apply-link summary {
-  padding: 9px 12px;
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 550;
-  cursor: pointer;
-}
-
+/* 分享連結：輸入框 + 套用（設定頁） */
 .apply-link-row {
   display: flex;
   gap: 8px;
-  padding: 0 12px;
 }
 
 .apply-link-row .input {
@@ -2518,15 +2555,16 @@ onUnmounted(() => {
   min-width: 0;
 }
 
-.apply-link .hint {
-  margin: 8px 12px 12px;
+.apply-link-row .btn {
+  flex: 0 0 auto;
 }
 
-.apply-link code {
+.apply-link-row code,
+.card .hint code {
   padding: 1px 5px;
+  border: 1px solid var(--line);
   border-radius: 5px;
   background: var(--surface);
-  border: 1px solid var(--line);
   font-size: 12px;
   word-break: break-all;
 }
