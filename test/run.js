@@ -1,5 +1,6 @@
 /* 純邏輯自我檢查：node test/run.js */
 import assert from 'node:assert/strict'
+import { existsSync, readFileSync } from 'node:fs'
 import {
   extFromMime,
   fileToStored,
@@ -636,5 +637,33 @@ assert.equal(extFromMime('image/jpeg'), 'jpg')
 assert.equal(extFromMime('image/png'), 'png')
 assert.equal(extFromMime('image/heic'), 'heic')
 assert.equal(extFromMime('something-else'), 'png')
+
+/* ---------- PWA：離線可用需要的檔案 ---------- */
+const root = new URL('..', import.meta.url)
+const readRoot = (f) => readFileSync(new URL(f, root), 'utf8')
+
+for (const file of [
+  'public/sw.js',
+  'public/manifest.json',
+  'public/icons/icon-192.png',
+  'public/icons/icon-512.png',
+  'public/icons/apple-touch-icon.png',
+]) {
+  assert.ok(existsSync(new URL(file, root)), `離線可用需要 ${file}`)
+}
+
+const shell = readRoot('index.html')
+assert.match(shell, /rel="manifest"/, 'index.html 要連到 manifest')
+assert.match(shell, /apple-touch-icon/, 'index.html 要有 iOS 加到主畫面的圖示')
+
+const manifest = JSON.parse(readRoot('public/manifest.json'))
+assert.equal(manifest.display, 'standalone', '加到主畫面要全螢幕')
+assert.ok(manifest.icons?.length >= 2, 'manifest 要提供圖示')
+assert.equal(manifest.start_url, './', '要能在子路徑（GitHub Pages）下開')
+
+const sw = readRoot('public/sw.js')
+assert.match(sw, /addEventListener\('fetch'/, 'Service Worker 要有 fetch 處理')
+assert.match(sw, /traineddata/, 'Service Worker 不該快取語言模型（tesseract 自己存 IndexedDB）')
+assert.match(sw, /new Response\(/, '存進快取前要重新包成乾淨的回應，否則 gzip 標頭會讓 script 載入失敗')
 
 console.log('test/run.js: 全部通過')

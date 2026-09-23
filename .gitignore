@@ -13,3 +13,6 @@ npm-debug.log*
 *.jpeg
 *.webp
 *.heic
+
+# 例外：App 自己的圖示要進版控（加到主畫面用）
+!public/icons/*.png

@@ -26,3 +26,37 @@ window.addEventListener('unhandledrejection', (event) => {
 })
 
 app.mount('#app')
+
+/*
+ * 離線可用：Service Worker（public/sw.js）會把畫面檔案、OCR 引擎與
+ * 用得到的東西快取起來，第一次用過之後就算完全沒網路也打得開、也能辨識。
+ * 只在 build 出來的版本註冊——開發時被快取住會很難改東西。
+ */
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', async () => {
+    try {
+      await navigator.serviceWorker.register(new URL('sw.js', document.baseURI).href)
+      const reg = await navigator.serviceWorker.ready
+      /*
+       * 第一次打開時 Service Worker 還沒接管這一頁，這頁抓過的檔案不是它抓的，
+       * 所以不會進快取（例如 tesseract.js 那個動態載入的 chunk）。
+       * 把這一頁用過的站內檔案清單交給它補齊，第二次開始（就算沒網路）才開得起來。
+       */
+      const urls = performance
+        .getEntriesByType('resource')
+        .map((entry) => entry.name)
+        .filter((url) => url.startsWith(location.origin))
+      if (reg.active && urls.length) reg.active.postMessage({ type: 'warm', urls })
+    } catch {
+      /* 註冊失敗（例如隱私模式）就照舊：有網路才用 */
+    }
+  })
+}
+
+/*
+ * 要求「永久儲存」。付款記錄、照片、OCR 模型都在 IndexedDB，
+ * 沒有這個授權時瀏覽器在空間不足時可以直接清掉（iOS 對沒加到主畫面的網站
+ * 更是 7 天沒用就清）。拿不到就算了，不影響使用。
+ */
+navigator.storage?.persist?.().catch(() => {})
+
