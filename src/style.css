@@ -319,6 +319,65 @@ select.input {
   min-width: 0;
 }
 
+/* ---------- SweetAlert2：統一對話框（刪除、重置、合併…） ---------- */
+.swal2-popup {
+  width: min(420px, calc(100vw - 32px));
+  padding: 22px 20px 18px;
+  border-radius: var(--radius);
+  font-family: inherit;
+}
+
+.swal2-title {
+  padding: 0;
+  font-size: 17px;
+  font-weight: 640;
+  letter-spacing: -0.005em;
+}
+
+.swal2-html-container {
+  margin: 8px 0 0;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.swal2-actions {
+  gap: 8px;
+  margin: 18px 0 0;
+}
+
+.swal2-styled {
+  margin: 0;
+  padding: 9px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-weight: 550;
+}
+
+.swal2-styled:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.swal2-styled.swal2-cancel {
+  color: var(--text);
+}
+
+.swal2-input {
+  height: 40px;
+  margin: 12px 0 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  font-size: 15px;
+}
+
+/* 對話框的按鈕不要因為連點而被放大（跟其他地方一致的處理） */
+.swal2-container,
+.swal2-popup,
+.swal2-styled {
+  touch-action: manipulation;
+}
+
 /* ---------- 其他 ---------- */
 .err {
   margin: 0;

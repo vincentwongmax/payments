@@ -6,6 +6,7 @@ import { clear, del, getAll, put, wipe } from './lib/db.js'
 import { compressImage, extFromMime, fileToStored, heicToJpeg, isHeic, readImageTime, sniffImageType, storedToFile } from './lib/image.js'
 import { hashFile } from './lib/md5.js'
 import { mergeParsed, parsePaymentText, pickDate, pickDefaultAmount, preloadOcr, recognizePasses } from './lib/ocr.js'
+import { askConfirm, askText, warn } from './lib/dialog.js'
 import { missingPersonIds, personNameSnapshot, recordsUsingPerson, restoreMissingPersons } from './lib/persons.js'
 import { fmtDateTime, labelBySource, parseShareParams, safeFileNamePart, searchFromText, shareLinkKey, uid } from './lib/util.js'
 
@@ -97,17 +98,27 @@ function savePerson() {
   if (action && persons.value.some((p) => p.isSelf)) action()
 }
 
-function removePerson(person) {
+async function removePerson(person) {
   /* 記錄還在用他（付錢人或受益人）就不能刪，不然那些記錄會變成找不到人 */
   const used = recordsUsingPerson(records.value, person.id)
   if (used.length) {
-    actionNotice.value =
-      `「${person.name}」還有 ${used.length} 筆記錄在用（付錢人或受益人），不能刪除。\n` +
-      '如果不再需要這位，請先把那些記錄改成別人。'
+    const { payer, beneficiary } = personUsage(person.id)
+    await warn(
+      `「${person.name}」不能刪除`,
+      `還有 ${used.length} 筆記錄用到（付款人 ${payer} 筆、受益人 ${beneficiary} 筆）。\n` +
+        '如果不再需要這位，請先把那些記錄改成別人。',
+    )
     return
   }
 
-  if (!confirm(`確定要刪除「${person.name}」嗎？`)) return
+  const ok = await askConfirm({
+    title: `確定要刪除「${person.name}」嗎？`,
+    text: '這位人物沒有被任何記錄用到，刪除後不會影響現有記錄。',
+    confirmText: '刪除',
+    icon: 'warning',
+  })
+  if (!ok) return
+
   persons.value = persons.value.filter((p) => p.id !== person.id)
   /* 保險：記錄裡指向他的欄位也要清掉，避免留下無效的 id */
   records.value.forEach((r) => {
@@ -237,17 +248,30 @@ const mergeTargetId = ref('')
 const otherPersons = computed(() => persons.value.filter((p) => p.id !== draft.value.id))
 
 /** 把正在修改的這個人合併到選好的另一個人 */
-function mergeInto() {
+async function mergeInto() {
   const source = persons.value.find((p) => p.id === draft.value.id)
   const target = persons.value.find((p) => p.id === mergeTargetId.value)
   if (!source || !target) return
 
-  const ok = confirm(
-    `確定要把「${source.name}」合併到「${target.name}」嗎？\n\n` +
+  /*
+   * 原生 <dialog showModal> 在最上層，SweetAlert2 是普通元素，開著的話會被蓋住，
+   * 所以先關掉修改視窗再問；取消就把它開回來。
+   */
+  personDialogEl.value?.close()
+
+  const ok = await askConfirm({
+    title: `把「${source.name}」合併到「${target.name}」？`,
+    text:
       `記錄裡的付款人與受益人都會改成「${target.name}」，` +
-      `「${source.name}」會變成別名，之後匯入同樣的寫法會自動對上。`,
-  )
-  if (!ok) return
+      `「${source.name}」會變成別名，之後匯入同樣的寫法會自動對上。合併後無法復原。`,
+    confirmText: '合併',
+    icon: 'warning',
+  })
+  if (!ok) {
+    /* 取消就回到修改視窗，讓使用者可以改別的 */
+    nextTick(() => personDialogEl.value?.showModal())
+    return
+  }
 
   records.value.forEach((r) => {
     if (r.payerId === source.id) r.payerId = target.id
@@ -418,9 +442,15 @@ const sourceOf = (record) => record.source || DEFAULT_SOURCE
 const seqLabels = computed(() => labelBySource(records.value, DEFAULT_SOURCE))
 
 /** 重新命名來源：同一個來源的記錄會一起改，改成既有名稱就等於合併 */
-function renameSource(current) {
+/** 重新命名來源：同一個來源的記錄會一起改，改成既有名稱就等於合併 */
+async function renameSource(current) {
   const count = records.value.filter((r) => sourceOf(r) === current).length
-  const next = prompt(`重新命名來源「${current}」（${count} 筆會一起改）`, current)
+  const next = await askText({
+    title: '重新命名來源',
+    text: `「${current}」的 ${count} 筆記錄會一起改。改成已經存在的來源名稱，就等於把兩批合併編號。`,
+    value: current,
+    placeholder: '來源名稱',
+  })
   if (next === null) return
   const name = next.trim().replace(/\s+/g, ' ').slice(0, 40)
   if (!name || name === current) return
@@ -1038,8 +1068,14 @@ async function attachImage(record, file) {
   }
 }
 
-function removeRecord(record) {
-  if (!confirm(`確定要刪除「${record.fileName}」這筆記錄嗎？`)) return
+async function removeRecord(record) {
+  const ok = await askConfirm({
+    title: '確定要刪除這筆記錄嗎？',
+    text: `${record.fileName || '這筆記錄'} 的圖片與辨識結果都會一起刪掉。`,
+    confirmText: '刪除',
+    icon: 'warning',
+  })
+  if (!ok) return
   revoke(record.url)
   records.value = records.value.filter((r) => r.id !== record.id)
 }
@@ -1112,9 +1148,12 @@ async function refreshApp() {
 
 /* ---------- 重置：什麼都不留 ---------- */
 async function resetAll() {
-  const ok = confirm(
-    '重置會刪除全部的付款記錄、圖片、人物清單與設定，而且無法復原。\n\n確定要重置嗎？',
-  )
+  const ok = await askConfirm({
+    title: '確定要重置嗎？',
+    text: '重置會刪除全部的付款記錄、圖片、人物清單與設定，而且無法復原。',
+    confirmText: '重置並清空',
+    icon: 'warning',
+  })
   if (!ok) return
 
   records.value.forEach((r) => revoke(r.url))
