@@ -17,6 +17,7 @@ import {
   renameNoteCategory,
   seedNoteCategories,
 } from './lib/notes.js'
+import { recordsToText } from './lib/textExport.js'
 import { missingPersonIds, personNameSnapshot, recordsUsingPerson, restoreMissingPersons } from './lib/persons.js'
 import { fmtDateTime, labelBySource, parseShareParams, safeFileNamePart, searchFromText, shareLinkKey, uid } from './lib/util.js'
 
@@ -599,6 +600,79 @@ async function deleteCategory(text) {
 
 const moveCategory = (index, delta) => {
   noteCategories.value = moveNoteCategory(noteCategories.value, index, delta)
+}
+
+/* ---------- 匯出文字（只文字、不含圖片） ---------- */
+const recordsText = () => recordsToText(records.value, persons.value)
+
+function textFileName(ext = 'txt') {
+  return ['付款記錄', safeFileNamePart(selfPerson.value?.name), stamp(), '文字']
+    .filter(Boolean)
+    .join('-')
+    .concat(`.${ext}`)
+}
+
+function exportTextOnly() {
+  if (!records.value.length) {
+    warn('還沒有記錄', '目前沒有任何付款記錄可以匯出。')
+    return
+  }
+  const fileName = textFileName()
+  const file = new File([recordsText()], fileName, { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(file)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = fileName
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+  backupNotice.value = `已匯出 ${records.value.length} 筆的文字（不含圖片）→ ${fileName}`
+}
+
+async function copyTextOnly() {
+  if (!records.value.length) {
+    warn('還沒有記錄', '目前沒有任何付款記錄可以複製。')
+    return
+  }
+  const text = recordsText()
+
+  /* 先試剪貼簿 API（https 或加到主畫面的 App 才有），失敗再退回舊寫法 */
+  try {
+    await navigator.clipboard.writeText(text)
+    backupNotice.value = `已複製 ${records.value.length} 筆的文字，可以直接貼到 Excel 或記事本`
+    return
+  } catch {
+    /* 繼續往下試 */
+  }
+
+  try {
+    const area = document.createElement('textarea')
+    area.value = text
+    area.setAttribute('readonly', '')
+    area.style.position = 'fixed'
+    area.style.top = '-1000px'
+    document.body.appendChild(area)
+    area.select()
+    const ok = document.execCommand('copy')
+    area.remove()
+    if (ok) {
+      backupNotice.value = `已複製 ${records.value.length} 筆的文字`
+      return
+    }
+  } catch {
+    /* 繼續往下 */
+  }
+
+  /* 都不行就把文字顯示出來讓使用者自己長按複製 */
+  await Swal.fire({
+    title: '複製這段文字',
+    html: `<textarea class="copy-area" readonly>${text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')}</textarea>`,
+    confirmButtonText: '關閉',
+    customClass: { popup: 'copy-popup' },
+  })
 }
 
 const actionNotice = ref('')
@@ -1897,6 +1971,20 @@ onUnmounted(() => {
           貼上的內容會留在這個框裡（除非你自己改掉或清空），**重置也不會消失**；
           從連結帶進來的備注分類也一樣會保留。
         </p>
+      </section>
+
+      <section class="card">
+        <div class="card-head card-head-inline">
+          <h2>匯出文字（不含圖片）</h2>
+        </div>
+        <p class="hint">
+          <code>付錢人 → 受益人 → 錢 → 備注 → 付款時間</code>，Tab 分隔、第一行是欄位名稱；
+          貼到 Excel 會自動分欄。付款時間沒填的就留空。
+        </p>
+        <div class="head-actions">
+          <button class="btn" @click="exportTextOnly">下載 .txt</button>
+          <button class="btn btn-primary" @click="copyTextOnly">複製文字</button>
+        </div>
       </section>
 
       <section class="card">

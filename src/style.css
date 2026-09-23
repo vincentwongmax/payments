@@ -441,6 +441,22 @@ select.input {
   text-align: left;
 }
 
+/* SweetAlert2 裡的複製用文字框（剪貼簿 API 不能用時的退路） */
+.copy-area {
+  width: 100%;
+  min-height: 40vh;
+  padding: 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+  resize: vertical;
+}
+
 /* ---------- 其他 ---------- */
 .err {
   margin: 0;

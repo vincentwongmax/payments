@@ -28,6 +28,7 @@ import {
   renameNoteCategory,
   seedNoteCategories,
 } from '../src/lib/notes.js'
+import { recordsToText } from '../src/lib/textExport.js'
 import {
   missingPersonIds,
   personNameSnapshot,
@@ -775,6 +776,41 @@ const linkedCats = normalizeNoteCategories([{ text: 'X', link: true }, 'Y'])
 const renamedCats = renameNoteCategory(linkedCats, 'X', 'Z')
 assert.deepEqual(renamedCats.map((c) => c.text), ['Z', 'Y'], '改名保留位置')
 assert.equal(renamedCats[0].link, true, '改名保留「從連結來」的標記')
+
+/* ---------- 只匯出文字 ---------- */
+const textPeople = [
+  { id: 'p1', name: 'ben' },
+  { id: 'p2', name: 'Patrick' },
+  { id: 'p3', name: 'Vincent' },
+]
+const textRecords = [
+  {
+    payerId: 'p1',
+    beneficiaryIds: ['p3', 'p2', 'p1'],
+    amount: '10',
+    note: '停車費(15:14)(激流)',
+    paidAtText: '2026-08-02 15:23:28',
+  },
+  { payerId: 'p1', beneficiaryIds: [], amount: '43', note: '', paidAtText: '' },
+]
+const text = recordsToText(textRecords, textPeople)
+const textLines = text.split('\n')
+assert.equal(textLines[0], '付錢人\t受益人\t錢\t備注\t付款時間', '第一行是欄位名稱')
+assert.equal(
+  textLines[1],
+  'ben\tben,Patrick,Vincent\t10\t停車費(15:14)(激流)\t2026-08-02 15:23:28',
+  '照範例格式輸出（受益人依名字排序、逗號分隔）',
+)
+assert.equal(textLines[2], 'ben\t\t43\t\t', '空的受益人／備注／時間就留空')
+assert.equal(textLines.length, 3)
+/* 欄位裡有 Tab 或換行要清掉，不然欄位會跑掉 */
+assert.equal(
+  recordsToText([{ payerId: 'p1', amount: '1\n2', note: 'a\tb' }], textPeople).split('\n')[1],
+  'ben\t\t1 2\ta b\t',
+)
+assert.equal(recordsToText([], textPeople), '付錢人\t受益人\t錢\t備注\t付款時間', '沒有記錄只有表頭')
+/* 找不到名字（人物被刪掉）也不能炸 */
+assert.equal(recordsToText([{ payerId: 'gone', beneficiaryIds: ['gone'] }], textPeople).split('\n')[1], '\t\t\t\t')
 
 /* ---------- PWA：離線可用需要的檔案 ---------- */
 const root = new URL('..', import.meta.url)
