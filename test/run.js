@@ -17,7 +17,15 @@ import {
   pickDate,
   pickDefaultAmount,
 } from '../src/lib/ocr.js'
-import { labelBySource, parseShareParams, safeFileNamePart, searchFromText, shareLinkKey } from '../src/lib/util.js'
+import {
+  labelBySource,
+  parseShareParams,
+  relativeTime,
+  safeFileNamePart,
+  searchFromText,
+  shareLinkKey,
+  toAmountText,
+} from '../src/lib/util.js'
 import {
   DEFAULT_NOTE_CATEGORIES,
   keepNoteCategories,
@@ -812,8 +820,29 @@ assert.equal(recordsToText([], textPeople), '付錢人\t受益人\t錢\t備注\t
 /* 找不到名字（人物被刪掉）也不能炸 */
 assert.equal(recordsToText([{ payerId: 'gone', beneficiaryIds: ['gone'] }], textPeople).split('\n')[1], '\t\t\t\t')
 
-/* ---------- PWA：離線可用需要的檔案 ---------- */
-const root = new URL('..', import.meta.url)
+/* ---------- 金額輸入只收數字、以及「多久以前」 ---------- */
+assert.equal(toAmountText('123'), '123')
+assert.equal(toAmountText('12a3'), '123', '字母要去掉')
+assert.equal(toAmountText('1,234.56'), '1234.56', '逗號要去掉')
+assert.equal(toAmountText('NT$ 12.30'), '12.30')
+assert.equal(toAmountText('-5'), '5', '負號要去掉')
+assert.equal(toAmountText('1.2.3'), '1.23', '只留第一個小數點')
+assert.equal(toAmountText('12.'), '12.', '打到一半的小數點要留著')
+assert.equal(toAmountText(''), '')
+assert.equal(toAmountText('中文'), '')
+
+const NOW = new Date('2026-09-23T20:00:00').getTime()
+assert.equal(relativeTime(NOW - 30 * 1000, NOW), '剛剛')
+assert.equal(relativeTime(NOW - 5 * 60000, NOW), '5 分鐘前')
+assert.equal(relativeTime(NOW - 3 * 3600000, NOW), '3 小時前')
+assert.equal(relativeTime(new Date('2026-09-22T09:00:00').getTime(), NOW), '昨天')
+assert.equal(relativeTime(new Date('2026-09-21T23:00:00').getTime(), NOW), '前天')
+assert.equal(relativeTime(new Date('2026-09-18T10:00:00').getTime(), NOW), '5 天前')
+assert.equal(relativeTime(new Date('2026-08-01T10:00:00').getTime(), NOW), '2026-08-01')
+assert.equal(relativeTime(0, NOW), '')
+assert.equal(relativeTime(new Date('2026-09-23T01:00:00').getTime(), NOW), '19 小時前', '今天的稍早算小時前')
+
+/* ---------- PWA：離線可用需要的檔案 ---------- */const root = new URL('..', import.meta.url)
 const readRoot = (f) => readFileSync(new URL(f, root), 'utf8')
 
 for (const file of [

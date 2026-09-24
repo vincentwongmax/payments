@@ -39,6 +39,7 @@ export async function toBackup(records, persons, defaultCurrency, encodeImage = 
         return {
           id: r.id,
           seq,
+          createdAt: r.createdAt ?? 0,
           fileName: r.fileName,
           fileType: encoded?.type ?? r.file?.type ?? '',
           fileTime: r.fileTime,
@@ -80,6 +81,7 @@ export async function fromBackup(payload, decodeImage = base64ToBlob) {
   for (const raw of [...payload.records].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))) {
     records.push({
       id: raw.id ?? `imported-${records.length}`,
+      createdAt: raw.createdAt ?? 0,
       fileName: raw.fileName ?? '未命名圖片',
       /* 手動新增的記錄沒有圖片 */
       file: raw.image ? await decodeImage(raw.image, raw.fileType ?? '') : null,

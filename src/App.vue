@@ -19,7 +19,7 @@ import {
 } from './lib/notes.js'
 import { recordCells, recordsToText } from './lib/textExport.js'
 import { missingPersonIds, personNameSnapshot, recordsUsingPerson, restoreMissingPersons } from './lib/persons.js'
-import { fmtDateTime, labelBySource, parseShareParams, safeFileNamePart, searchFromText, shareLinkKey, uid } from './lib/util.js'
+import { fmtDateTime, labelBySource, parseShareParams, safeFileNamePart, searchFromText, shareLinkKey, toAmountText, uid } from './lib/util.js'
 
 /* ---------- 人物 ---------- */
 const persons = ref([])
@@ -174,8 +174,17 @@ function onTouchStart(event) {
   gestureTouches = event.touches?.length ?? 1
 }
 
-function onTouchMove() {
+/*
+ * 兩件事：
+ *   1. 標記「這一下有滑動」（捲動結束順手點一下不算連點）
+ *   2. 兩指以上＝雙指縮放：整頁一律擋掉，只有「看圖」那張圖例外
+ *      （touch-action 在 iOS 上不一定擋得住，直接 preventDefault 最實在）
+ */
+function onTouchMove(event) {
   gestureMoved = true
+  if ((event.touches?.length ?? 0) > 1 && !event.target?.closest?.('.viewer')) {
+    event.preventDefault()
+  }
 }
 
 function onTouchEnd(event) {
@@ -342,6 +351,8 @@ function baseRecord() {
   return {
     id: uid(),
     seq: nextSeq(),
+    /* 這筆記錄加進 App 的時間（記錄卡片上顯示的「剛剛／幾分鐘前」就是用它） */
+    createdAt: Date.now(),
     source: DEFAULT_SOURCE,
     hash: '',
     fileName: '',
@@ -378,11 +389,15 @@ function newRecord(file, time, hash) {
   }
 }
 
-/** 沒有圖片也能先開一筆，金額與時間自己填 */
+/**
+ * 沒有圖片也能先開一筆，金額與時間自己填。
+ * 付款時間一開始就等於「建立這筆的時間」，使用者再自己改。
+ */
 function addBlankRecord() {
   requireSelf(() => {
     const rec = baseRecord()
     rec.fileName = nextManualName()
+    rec.paidAtText = fmtDateTime(rec.createdAt)
     records.value.push(rec)
   })
 }
@@ -518,10 +533,23 @@ const buildTimeText = buildTime
   ? fmtDateTime(new Date(buildTime).getTime())
   : '（開發模式沒有建置時間）'
 
+/*
+ * 設定頁＝同一個頁面換一個畫面，所以手機的「返回手勢」（iOS 從左邊緣往右滑）
+ * 與 Android 的系統返回鍵原本會直接離開整個 App。
+ * 開設定頁時自己補一筆歷史記錄，返回手勢／返回鍵就會回到主畫面。
+ */
+const SETTINGS_STATE = 'settings'
+
 const openSettings = async () => {
+  if (view.value === 'settings') return
   view.value = 'settings'
   newCategory.value = ''
   window.scrollTo({ top: 0 })
+  try {
+    history.pushState({ [SETTINGS_STATE]: true }, '')
+  } catch {
+    /* 不能操作歷史記錄（例如無網址的環境）不影響看設定 */
+  }
   await Promise.all([loadStorageInfo(), loadOfflineState()])
 }
 
@@ -544,8 +572,22 @@ async function loadOfflineState() {
 }
 
 const closeSettings = () => {
+  /* 有自己補的那筆歷史記錄就退回去（讓 popstate 負責切畫面） */
+  if (history.state?.[SETTINGS_STATE]) {
+    history.back()
+    return
+  }
   view.value = 'main'
   window.scrollTo({ top: 0 })
+}
+
+/* 返回手勢／返回鍵：切回主畫面就好，不要離開整個 App */
+function onPopState() {
+  const wantSettings = !!history.state?.[SETTINGS_STATE]
+  if ((view.value === 'settings') === wantSettings) return
+  view.value = wantSettings ? 'settings' : 'main'
+  window.scrollTo({ top: 0 })
+  if (wantSettings) Promise.all([loadStorageInfo(), loadOfflineState()])
 }
 
 async function loadStorageInfo() {
@@ -602,6 +644,27 @@ const moveCategory = (index, delta) => {
   noteCategories.value = moveNoteCategory(noteCategories.value, index, delta)
 }
 
+/* ---------- 記錄的選取（點一下外框亮起來）與「幾分鐘前」 ---------- */
+const selectedId = ref('')
+
+const selectRecord = (record) => {
+  selectedId.value = record?.id ?? ''
+}
+
+/*
+ * 點畫面空白的地方就取消選取。對話框（看圖、SweetAlert2）裡面的點擊不算，
+ * 所以看完圖關掉之後，原本亮起來的那一筆還是亮的。
+ */
+function onPageClick(event) {
+  const target = event.target
+  if (target?.closest?.('.rec, .plain-table tbody tr, dialog, .swal2-container')) return
+  selectedId.value = ''
+}
+
+/* 每半分鐘更新一次，卡片上的「剛剛／幾分鐘前」才會自己往前走 */
+const nowMs = ref(Date.now())
+const nowTimer = setInterval(() => (nowMs.value = Date.now()), 30000)
+
 /* ---------- 普通文字模式（只影響「付款記錄」那一區） ---------- */
 const plainMode = ref(false)
 const plainRows = computed(() => recordCells(records.value, persons.value))
@@ -654,16 +717,20 @@ async function editPlainCell(record, key) {
   }
 
   if (key === 'amount') {
-    const next = await askText({ title: '金額', value: record.amount ?? '', placeholder: '0.00' })
+    const next = await askText({
+      title: '金額',
+      text: '只收數字（需要小數點也可以打）。',
+      value: record.amount ?? '',
+      placeholder: '0.00',
+    })
     if (next === null) return
-    record.amount = next.trim()
+    record.amount = toAmountText(next)
     return
   }
 
   if (key === 'note') {
     const next = await askTextWithList({
       title: '備注',
-      text: '可以直接打字，也可以點下面的常用分類。',
       value: record.note ?? '',
       placeholder: '例如：停車費(15:14)',
       options: noteCategories.value.map((c) => c.text),
@@ -1370,9 +1437,11 @@ async function attachImage(record, file) {
     }
 
     const time = await readImageTime(picked)
-    /* 使用者已經自己填過的金額與時間不要被辨識結果蓋掉 */
+    /*
+     * 使用者自己填過的金額與時間不要被辨識結果蓋掉
+     * （手動新增時自動帶入的付款時間不算「自己填的」，所以還是讓辨識結果更新它）
+     */
     if (record.amount !== '') record.currencyLocked = true
-    if (record.paidAtText !== '') record.paidAtManual = true
 
     revoke(record.url)
     record.file = picked
@@ -1738,6 +1807,7 @@ function serializeRecord(r) {
   return {
     id: r.id,
     seq: r.seq,
+    createdAt: r.createdAt ?? 0,
     source: r.source || DEFAULT_SOURCE,
     fileName: r.fileName,
     fileTime: r.fileTime,
@@ -1831,12 +1901,25 @@ watch(
 )
 
 onMounted(async () => {
+  /*
+   * 重新整理時人可能停在設定頁，歷史記錄裡就留著那個記號；
+   * 先清掉才不會發生「按返回卻沒有反應」。
+   */
+  try {
+    if (history.state) history.replaceState(null, '')
+  } catch {
+    /* 不能操作歷史記錄就算了 */
+  }
   /* 直接按 Ctrl+V 也能貼上圖片 */
   document.addEventListener('paste', onPaste)
-  /* 連點兩下不要放大畫面（見 onTouchEnd 的說明） */
+  /* 連點兩下不要放大畫面、雙指也不要縮放（見 onTouchMove 的說明） */
   document.addEventListener('touchstart', onTouchStart, { passive: true })
-  document.addEventListener('touchmove', onTouchMove, { passive: true })
+  document.addEventListener('touchmove', onTouchMove, { passive: false })
   document.addEventListener('touchend', onTouchEnd, { passive: false })
+  /* 手機的返回手勢／返回鍵：設定頁要能退回主畫面（見 onPopState） */
+  window.addEventListener('popstate', onPopState)
+  /* 點空白的地方＝取消選取那一筆（記錄、表格列與對話框裡的點擊不算） */
+  document.addEventListener('click', onPageClick)
   /* 程式出錯時顯示出來（不然畫面會像「卡住」，要 F5 才知道） */
   window.addEventListener('app-error', onAppError)
   /* 先開背景載入 OCR 引擎，第一次上傳就不用等 */
@@ -1933,6 +2016,9 @@ onUnmounted(() => {
   document.removeEventListener('touchstart', onTouchStart)
   document.removeEventListener('touchmove', onTouchMove)
   document.removeEventListener('touchend', onTouchEnd)
+  window.removeEventListener('popstate', onPopState)
+  document.removeEventListener('click', onPageClick)
+  clearInterval(nowTimer)
   window.removeEventListener('app-error', onAppError)
 })
 </script>
@@ -1941,7 +2027,7 @@ onUnmounted(() => {
   <div class="page">
     <!-- ================= 設定頁 ================= -->
     <template v-if="view === 'settings'">
-      <header class="head">
+      <header class="head head-settings">
         <div class="head-text">
           <h1>設定</h1>
           <p class="hint">分類管理、更新、資料統計與版本資訊。</p>
@@ -2052,7 +2138,7 @@ onUnmounted(() => {
           </button>
         </div>
         <p class="hint">
-          貼上的內容會留在這個框裡（除非你自己改掉或清空），**重置也不會消失**；
+          貼上的內容會留在這個框裡（除非你自己改掉或清空），重置也不會消失；
           從連結帶進來的備注分類也一樣會保留。
         </p>
       </section>
@@ -2324,7 +2410,13 @@ onUnmounted(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(r, i) in records" :key="r.id">
+            <tr
+              v-for="(r, i) in records"
+              :key="r.id"
+              class="plain-row"
+              :class="{ on: selectedId === r.id }"
+              @click="selectRecord(r)"
+            >
               <td
                 class="plain-seq"
                 :title="`來源：${r.source || '本機'}｜點一下可重新命名`"
@@ -2357,6 +2449,8 @@ onUnmounted(() => {
           :persons="persons"
           :note-categories="noteCategories"
           :index-label="seqLabels.get(r.id) ?? ''"
+          :active="selectedId === r.id"
+          :now="nowMs"
           @view="openViewer"
           @remove="removeRecord"
           @retry="retryOcr"
@@ -2365,6 +2459,7 @@ onUnmounted(() => {
           @pick-note="onPickNoteCategory"
           @save-note="onSaveNoteCategory"
           @attach="attachImage"
+          @select="selectRecord"
         />
       </div>
     </section>
@@ -2796,6 +2891,28 @@ onUnmounted(() => {
   cursor: pointer;
 }
 
+/*
+ * 被點到的那一列：整列的外框亮起來（跟正常模式的卡片一樣的綠色）。
+ * 用 inset 的 box-shadow 畫框，表格列（tr）在 Safari 上不吃 outline。
+ */
+.plain-row.on td {
+  background: var(--accent-soft);
+  box-shadow: inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent);
+}
+
+.plain-row.on td:first-child {
+  box-shadow: inset 2px 0 0 var(--accent), inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent);
+}
+
+.plain-row.on td:last-child {
+  box-shadow: inset -2px 0 0 var(--accent), inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent);
+}
+
+.plain-row.on .plain-seq {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .plain-cell:hover {
   background: var(--accent-soft);
   color: var(--accent);
@@ -3134,6 +3251,8 @@ onUnmounted(() => {
 
 .viewer {
   width: min(860px, calc(100vw - 24px));
+  /* 全頁都停用雙指縮放，看圖這個對話框是唯一的例外 */
+  touch-action: pan-x pan-y pinch-zoom;
 }
 
 .viewer-body {
@@ -3175,6 +3294,8 @@ onUnmounted(() => {
   overflow: auto;
   border-radius: var(--radius-sm);
   background: #eceee9;
+  /* 全頁都停用雙指縮放，只有看圖這一區例外（單指捲動要留著） */
+  touch-action: pan-x pan-y pinch-zoom;
 }
 
 .viewer-stage img {
@@ -3243,6 +3364,22 @@ onUnmounted(() => {
 
   .head h1 {
     font-size: 21px;
+  }
+
+  /* 設定頁：返回鍵放在左上角（標題在它右邊），不用再伸到大拇指按不到的右上角 */
+  .head-settings {
+    align-items: center;
+    justify-content: flex-start;
+    gap: 10px;
+  }
+
+  .head-settings .head-btns {
+    order: -1;
+    width: auto;
+  }
+
+  .head-settings .head-btns .btn {
+    flex: 0 0 auto;
   }
 
   .card {

@@ -3,16 +3,53 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import flatpickr from 'flatpickr'
 import 'flatpickr/dist/flatpickr.min.css'
 import { Mandarin } from 'flatpickr/dist/l10n/zh.js'
+import { fmtDateTime, relativeTime, toAmountText } from '../lib/util.js'
 
 const props = defineProps({
   record: { type: Object, required: true },
   persons: { type: Array, default: () => [] },
   noteCategories: { type: Array, default: () => [] },
   indexLabel: { type: String, default: '' },
+  /* 這一筆是不是被點選的那一筆（外框會亮起來） */
+  active: { type: Boolean, default: false },
+  /* 現在時間（由 App.vue 每半分鐘更新一次，用來算「幾分鐘前」） */
+  now: { type: Number, default: 0 },
 })
-const emit = defineEmits(['view', 'remove', 'retry', 'skip', 'rename-source', 'pick-note', 'save-note', 'attach'])
+const emit = defineEmits([
+  'view',
+  'remove',
+  'retry',
+  'skip',
+  'rename-source',
+  'pick-note',
+  'save-note',
+  'attach',
+  'select',
+])
 
 const r = computed(() => props.record)
+
+/* 點卡片任何地方就選取這一筆（點空白處由 App.vue 取消） */
+const selectSelf = () => emit('select', props.record)
+
+/*
+ * 加入 App 的時間（不是付款時間）：手機版顯示在標題右邊、桌機版顯示在
+ * 「圖片」按鈕左邊。點一下會在「多久以前」與完整時間之間切換。
+ * 舊資料沒有這個欄位時，退回用圖片的時間。
+ */
+const stampOpen = ref(false)
+const stampMs = computed(() => r.value.createdAt || r.value.fileTime || 0)
+const stampFull = computed(() => fmtDateTime(stampMs.value))
+const stampText = computed(() =>
+  stampOpen.value ? stampFull.value : relativeTime(stampMs.value, props.now || Date.now()),
+)
+
+/* 金額只收數字與一個小數點：其他字元一打進來就被去掉 */
+function onAmountInput(event) {
+  const clean = toAmountText(event.target.value)
+  if (event.target.value !== clean) event.target.value = clean
+  r.value.amount = clean
+}
 
 /* 手動新增的記錄補圖片用 */
 const pickEl = ref(null)
@@ -188,7 +225,7 @@ function toggleBeneficiary(id) {
 </script>
 
 <template>
-  <article class="rec">
+  <article class="rec" :class="{ on: active }" @click="selectSelf">
     <div class="thumbs">
       <button
         v-if="r.url"
@@ -234,7 +271,20 @@ function toggleBeneficiary(id) {
         >
           {{ statusText(r) }}
         </button>
+        <!-- 加入 App 的時間：手機版在標題右邊、桌機版在「圖片」左邊 -->
         <span class="spacer" />
+        <button
+          v-if="stampMs"
+          type="button"
+          class="stamp"
+          :class="{ 'stamp-open': stampOpen }"
+          :title="stampOpen ? '點一下收起' : `加入時間：${stampFull}`"
+          @click="stampOpen = !stampOpen"
+        >
+          {{ stampText }}
+        </button>
+        <!-- 手機版：按鈕一律換到下一行（標題那一行只放標題、標籤與時間） -->
+        <span class="top-break" />
         <!-- 辨識中／等待辨識：可以只跳過這一張（要重新辨識就點上面的標籤） -->
         <button
           v-if="r.ocrStatus === 'running' || r.ocrStatus === 'pending'"
@@ -323,10 +373,11 @@ function toggleBeneficiary(id) {
         <label class="field">
           <span class="lbl">付款多少錢{{ r.currency ? `（${r.currency}）` : '' }}</span>
           <input
-            v-model="r.amount"
+            :value="r.amount"
             class="input amount"
             inputmode="decimal"
             placeholder="0.00"
+            @input="onAmountInput"
           />
         </label>
 
@@ -448,6 +499,15 @@ function toggleBeneficiary(id) {
   box-shadow: var(--shadow);
 }
 
+/*
+ * 被點到的記錄：外框亮起來（兩層：綠色實線 ＋ 淡淡的光暈），
+ * 點畫面空白處或別筆記錄才會換人。放在 :hover 後面才蓋得過 hover。
+ */
+.rec.on {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow);
+}
+
 .thumb-btn {
   display: block;
   width: 100%;
@@ -530,6 +590,35 @@ function toggleBeneficiary(id) {
 
 .spacer {
   flex: 1;
+}
+
+/* 手機版才會出現的換行點（桌機版不佔位） */
+.top-break {
+  display: none;
+}
+
+/* 加入 App 的時間：小小的、低調的一行字，點一下切換成完整時間 */
+.stamp {
+  flex: none;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.stamp:hover {
+  color: var(--accent);
+}
+
+/* 展開成完整時間時給個底線，看得出是按過的狀態 */
+.stamp-open {
+  color: var(--accent);
+  text-decoration: underline dotted;
 }
 
 .badge {
@@ -784,8 +873,34 @@ function toggleBeneficiary(id) {
     flex-wrap: wrap;
   }
 
+  /*
+   * 標題那一行：標題、標籤、加入時間；按鈕一律換到下一行。
+   * 標題用 flex-basis 0：長檔名才不會把「標籤」與「加入時間」擠到下一行
+   * （換行是用每個項目的內容寬度判斷的，不先給 0 的話長檔名一定換行）。
+   * 手機版不需要中間那段彈性空白，標題自己會把後面兩個推到右邊。
+   */
   .file {
+    flex: 1 1 0;
+  }
+
+  .top .spacer {
+    display: none;
+  }
+
+  /* 手指比較大：時間的文字點擊範圍加大一點 */
+  .stamp {
+    padding: 6px 2px;
+  }
+
+  .top-break {
+    display: block;
     flex: 1 0 100%;
+    height: 0;
+  }
+
+  /* 手機版：標題那一行的按鈕（跳過／圖片／刪除／序號）平均分攤寬度 */
+  .top .btn {
+    flex: 1 1 auto;
   }
 }
 </style>

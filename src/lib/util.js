@@ -38,6 +38,47 @@ export const safeFileNamePart = (text) =>
     .slice(0, 40)
 
 /**
+ * 金額輸入框只留數字與一個小數點：其他字元（字母、國字、逗號、負號…）一律去掉。
+ * 給「付款多少錢」用，避免使用者打到不該打的字。
+ */
+export function toAmountText(text) {
+  const raw = String(text ?? '').replace(/[^\d.]/g, '')
+  const firstDot = raw.indexOf('.')
+  if (firstDot < 0) return raw
+  /* 只留第一個小數點，後面的去掉 */
+  return raw.slice(0, firstDot + 1) + raw.slice(firstDot + 1).replace(/\./g, '')
+}
+
+const DAY_MS = 86400000
+
+/**
+ * 「多久以前」：剛剛／N 分鐘前／N 小時前／昨天／前天／N 天前／日期。
+ * 用日曆天判斷昨天與前天（不是用 24 小時），跟一般 App 的講法一致。
+ */
+export function relativeTime(ms, now = Date.now()) {
+  if (!ms) return ''
+  const diff = now - ms
+  if (diff < 60000) return '剛剛'
+  if (diff < 3600000) return `${Math.floor(diff / 60000)} 分鐘前`
+
+  const startOfDay = (value) => {
+    const d = new Date(value)
+    d.setHours(0, 0, 0, 0)
+    return d.getTime()
+  }
+  /* 用「日曆天」算，不是用 24 小時：昨晚 11 點也是「昨天」 */
+  const dayDiff = Math.round((startOfDay(now) - startOfDay(ms)) / DAY_MS)
+
+  if (dayDiff <= 0) return `${Math.floor(diff / 3600000)} 小時前`
+  if (dayDiff === 1) return '昨天'
+  if (dayDiff === 2) return '前天'
+  if (dayDiff < 30) return `${dayDiff} 天前`
+
+  const d = new Date(ms)
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+/**
  * 每筆記錄左邊的「來源-序號」標籤。
  * 序號在同一個來源內從 1 開始，不同來源各自編號，所以匯入檔和自己上傳的可以區分。
  */

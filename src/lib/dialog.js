@@ -109,6 +109,8 @@ export const askChecklist = async ({
 /**
  * 輸入文字，但下面同時列出一串常用選項可以點（點一下就填進輸入框）。
  * 用在備注：可以自己打，也可以直接挑一個分類。
+ * 兩塊刻意分開：上面是「自己打」的輸入框，下面是「常用分類」，
+ * 中間用一條線與小標題隔開，才不會看起來像同一串東西。
  */
 export const askTextWithList = async ({
   title,
@@ -119,18 +121,21 @@ export const askTextWithList = async ({
   confirmText = '確定',
 }) => {
   const html =
-    `<input id="swal-with-list" class="swal2-input" value="${escapeHtml(value)}" placeholder="${escapeHtml(
+    `<input id="swal-with-list" class="swal2-input note-edit-input" value="${escapeHtml(
+      value,
+    )}" placeholder="${escapeHtml(
       placeholder,
     )}" autocapitalize="off" autocorrect="off" spellcheck="false" />` +
     (options.length
-      ? `<div class="pick-list pick-list-compact">${options
+      ? `<div class="note-pick"><span class="note-pick-head">或從下面的常用分類挑一個</span>` +
+        `<div class="pick-list pick-list-compact">${options
           .map(
             (option) =>
               `<button type="button" class="pick-item" data-fill="${escapeHtml(option)}">${escapeHtml(
                 option,
               )}</button>`,
           )
-          .join('')}</div>`
+          .join('')}</div></div>`
       : '')
 
   const result = await Swal.fire({
@@ -142,14 +147,23 @@ export const askTextWithList = async ({
     confirmButtonText: confirmText,
     cancelButtonText: '取消',
     focusConfirm: false,
-    /* 刻意不自動對焦：手機上鍵盤會把下面的分類清單蓋住 */
+    /*
+     * 刻意不自動對焦：手機上鍵盤一起來就把下面的分類清單整個蓋住。
+     * 這裡再保險一次——SweetAlert2 開好之後如果焦點跑到我們的輸入框，
+     * 就把它移開（點分類也一樣，填完字不跳鍵盤）。
+     */
     didOpen: (popup) => {
+      const input = popup.querySelector('#swal-with-list')
+      const blurInput = () => {
+        if (document.activeElement === input) input.blur()
+      }
+      blurInput()
+      setTimeout(blurInput, 60)
       popup.querySelectorAll('[data-fill]').forEach((el) =>
         el.addEventListener('click', () => {
-          const input = popup.querySelector('#swal-with-list')
           if (!input) return
           input.value = el.dataset.fill
-          input.focus()
+          el.blur()
         }),
       )
     },
