@@ -544,7 +544,7 @@ const buildTimeText = buildTime
  */
 const SETTINGS_STATE = 'settings'
 
-const openSettings = () => {
+const openSettings = async () => {
   if (view.value === 'settings') return
   view.value = 'settings'
   newCategory.value = ''
@@ -554,15 +554,7 @@ const openSettings = () => {
   } catch {
     /* 不能操作歷史記錄（例如無網址的環境）不影響看設定 */
   }
-  /*
-   * 資料統計（storage.estimate）與離線狀態在手機上都要花一點時間，
-   * 而且只有設定頁最下面那兩張卡片會用到，所以晚一點再算——
-   * 使用者按了設定馬上又滑回去時，才不會有東西在背景跟它搶。
-   */
-  setTimeout(() => {
-    loadStorageInfo()
-    loadOfflineState()
-  }, 250)
+  await Promise.all([loadStorageInfo(), loadOfflineState()])
 }
 
 /** 這台裝置現在是不是已經可以用離線（Service Worker 已經接管） */
@@ -598,11 +590,7 @@ function onPopState() {
   const wantSettings = !!history.state?.[SETTINGS_STATE]
   if ((view.value === 'settings') === wantSettings) return
   view.value = wantSettings ? 'settings' : 'main'
-  /*
-   * 捲到最上面交給下一個畫格：手機從邊緣滑回來時，捲動會讓瀏覽器
-   * 重新排版整個頁面，塞在 popstate 裡面處理會讓切換看起來卡住。
-   */
-  requestAnimationFrame(() => window.scrollTo({ top: 0 }))
+  window.scrollTo({ top: 0 })
   if (wantSettings) Promise.all([loadStorageInfo(), loadOfflineState()])
 }
 
@@ -2033,11 +2021,6 @@ onMounted(async () => {
    */
   try {
     if (history.state) history.replaceState(null, '')
-    /*
-     * 捲動位置自己管：從設定頁返回時，瀏覽器若還原上一頁的捲動位置，
-     * 會先把整頁重新排版一次（記錄多的時候很慢），關掉它切換才順。
-     */
-    if ('scrollRestoration' in history) history.scrollRestoration = 'manual'
   } catch {
     /* 不能操作歷史記錄就算了 */
   }
@@ -2364,11 +2347,7 @@ onUnmounted(() => {
     </template>
 
     <!-- ================= 主畫面 ================= -->
-    <!--
-      用 v-show 而不是 v-if：從設定頁回來時不要整棵主畫面砍掉重建，
-      不然記錄卡片（含圖片）都要重新解碼，手機上會卡住好幾秒。
-    -->
-    <div v-show="view === 'main'" class="view-main">
+    <template v-else>
     <header class="head">
       <div class="head-text">
         <h1>付款記錄</h1>
@@ -2615,12 +2594,8 @@ onUnmounted(() => {
         />
       </div>
     </section>
-    </div>
+    </template>
 
-    <!--
-      對話框放在兩個畫面外面：v-show 只是把主畫面藏起來，
-      對話框留著才不會被連帶影響（display:none 的子孫不能 showModal）。
-    -->
     <dialog ref="selfDialogEl" class="dialog" @close="onSelfDialogClose">
       <form @submit.prevent="confirmSelf">
         <h3 class="dialog-head">請選擇誰是自己</h3>
