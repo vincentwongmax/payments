@@ -1311,10 +1311,23 @@ const ocrBusy = ref(false)
 const ocrDone = ref(0)
 const ocrTotal = ref(0)
 const ocrLabel = ref('')
+/* 正在辨識的這一張跑到幾 %（進度條要顯示「這一張」的進度，不能只跳張數） */
+const ocrFilePercent = ref(0)
+const ocrStage = ref('')
 const ocrStop = ref(false)
 const pendingOcrCount = computed(
   () => records.value.filter((r) => r.ocrStatus === 'pending').length,
 )
+
+/*
+ * 進度條的位置＝已經辨識完的張數 ＋ 正在跑的這一張的百分比。
+ * 這樣一張大圖在辨識時，條子會順順地走，而不是整張跑完才跳一格。
+ */
+const ocrPercent = computed(() => {
+  if (!ocrTotal.value) return 0
+  const inside = Math.min(100, Math.max(0, ocrFilePercent.value)) / 100
+  return Math.min(100, ((ocrDone.value + inside) / ocrTotal.value) * 100)
+})
 
 /** 使用者按「跳過」：這張不再辨識，圖與其他欄位都留著 */
 function skipOcr(record) {
@@ -1352,6 +1365,8 @@ async function runOcr() {
         if (ocrStop.value) break
         rec.ocrStatus = 'running'
         ocrLabel.value = rec.fileName
+        ocrFilePercent.value = 0
+        ocrStage.value = ''
         try {
           /* 兩種模式並行跑，進度取兩邊平均 */
           const passProgress = [0, 0]
@@ -1360,7 +1375,8 @@ async function runOcr() {
             rec.ocrProgress = Math.round(
               (passProgress.reduce((sum, p) => sum + p, 0) / count) * 100,
             )
-            ocrLabel.value = `${rec.fileName}｜${m.status ?? ''}`
+            ocrFilePercent.value = rec.ocrProgress
+            ocrStage.value = m.status ?? ''
           })
           /* 辨識期間使用者按了「跳過」或「全部停止」→ 結果就不要了 */
           if (rec.ocrStatus !== 'running') {
@@ -1393,6 +1409,8 @@ async function runOcr() {
   } finally {
     ocrBusy.value = false
     ocrLabel.value = ''
+    ocrFilePercent.value = 0
+    ocrStage.value = ''
   }
 }
 
@@ -2367,9 +2385,21 @@ onUnmounted(() => {
       />
 
       <div v-if="ocrBusy" class="ocr-bar">
-        <div class="ocr-track"><div class="ocr-fill" :style="{ width: `${(ocrDone / ocrTotal) * 100}%` }" /></div>
+        <div class="ocr-track">
+          <div class="ocr-fill" :style="{ width: `${ocrPercent}%` }" />
+        </div>
         <div class="ocr-row">
-          <span class="hint">辨識中 {{ ocrDone }}/{{ ocrTotal }}｜{{ ocrLabel }}</span>
+          <!--
+            張數是整個佇列，百分比是「這一張」現在跑到哪裡。
+            百分比排在檔名前面：手機上這一行會被截掉，重要的數字要留在前面。
+          -->
+          <span class="hint ocr-now">
+            辨識中 {{ ocrDone }}/{{ ocrTotal }}（<strong class="ocr-percent">{{ ocrFilePercent }}%</strong>）｜{{ ocrLabel }}<span
+              v-if="ocrStage"
+              class="ocr-stage"
+              >｜{{ ocrStage }}</span
+            >
+          </span>
           <span class="spacer" />
           <button type="button" class="btn btn-icon" @click="skipCurrentOcr">跳過這張</button>
           <button type="button" class="btn btn-icon" @click="stopOcr">全部停止</button>
@@ -3211,6 +3241,17 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 「這一張」的百分比：跟後面的英文階段說明分開，數字用等寬字才不會一直跳動 */
+.ocr-percent {
+  color: var(--text);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.ocr-stage {
+  opacity: 0.75;
 }
 
 .ocr-track {
