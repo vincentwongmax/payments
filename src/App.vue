@@ -370,6 +370,10 @@ function baseRecord() {
     amount: '',
     paidAtText: '',
     paidAtManual: false,
+    /* 鎖定：欄位、受益人、重新辨識、補圖全部停用（圖片還是可以放大看） */
+    locked: false,
+    /* 鎖定過一次之後，「這張圖有多個金額，用哪一個？」就不再出現 */
+    amountChooserOff: false,
     payerId: defaultPayerId.value,
     beneficiaryIds: [],
     note: '',
@@ -682,6 +686,8 @@ function togglePlainMode() {
  */
 async function editPlainCell(record, key) {
   if (!record) return
+  /* 鎖定的記錄不能改：先問要不要解除，解除後接著做原本要做的動作 */
+  if (record.locked && !(await unlockToEdit(record))) return
 
   if (key === 'payer') {
     const chosen = await pickFromList({
@@ -835,20 +841,34 @@ const seqLabels = computed(() => labelBySource(records.value, DEFAULT_SOURCE))
 /** 重新命名來源：同一個來源的記錄會一起改，改成既有名稱就等於合併 */
 /** 重新命名來源：同一個來源的記錄會一起改，改成既有名稱就等於合併 */
 async function renameSource(current) {
-  const count = records.value.filter((r) => sourceOf(r) === current).length
+  const same = records.value.filter((r) => sourceOf(r) === current)
+  const target = same.filter((r) => !r.locked)
+  if (!target.length) {
+    warn('這個來源的記錄都鎖定了', '要改來源名稱，請先解除鎖定。')
+    return
+  }
   const next = await askText({
     title: '重新命名來源',
-    text: `「${current}」的 ${count} 筆記錄會一起改。改成已經存在的來源名稱，就等於把兩批合併編號。`,
+    text: `「${current}」的 ${target.length} 筆記錄會一起改。改成已經存在的來源名稱，就等於把兩批合併編號。`,
     value: current,
     placeholder: '來源名稱',
   })
   if (next === null) return
   const name = next.trim().replace(/\s+/g, ' ').slice(0, 40)
   if (!name || name === current) return
-  records.value.forEach((r) => {
-    if (sourceOf(r) === current) r.source = name
+  target.forEach((r) => {
+    r.source = name
   })
-  backupNotice.value = `已把來源「${current}」改名為「${name}」`
+  const lockedCount = same.length - target.length
+  backupNotice.value =
+    `已把來源「${current}」改名為「${name}」` +
+    (lockedCount ? `（有 ${lockedCount} 筆已鎖定，維持原本的來源名稱）` : '')
+}
+
+/** 序號上的重新命名：鎖定的要先解除才能改（正常模式與純文字模式都走這裡） */
+async function renameSourceFrom(record) {
+  if (record?.locked && !(await unlockToEdit(record))) return
+  await renameSource(record?.source || DEFAULT_SOURCE)
 }
 
 function dismissNotices() {
@@ -1332,6 +1352,7 @@ const ocrPercent = computed(() => {
 /** 使用者按「跳過」：這張不再辨識，圖與其他欄位都留著 */
 function skipOcr(record) {
   if (!record) return
+  if (record.locked) return
   if (record.ocrStatus === 'pending' || record.ocrStatus === 'running') {
     record.ocrStatus = 'skipped'
     record.ocrProgress = 0
@@ -1356,8 +1377,8 @@ async function runOcr() {
   ocrBusy.value = true
   ocrStop.value = false
   try {
-    /* OCR 途中又上傳新圖時，這裡會再撿起來跑一輪 */
-    let queue = records.value.filter((r) => r.ocrStatus === 'pending')
+    /* OCR 途中又上傳新圖時，這裡會再撿起來跑一輪（鎖定的不辨識、也不會被改到） */
+    let queue = records.value.filter((r) => r.ocrStatus === 'pending' && !r.locked)
     while (queue.length && !ocrStop.value) {
       ocrDone.value = 0
       ocrTotal.value = queue.length
@@ -1383,6 +1404,13 @@ async function runOcr() {
             ocrDone.value++
             continue
           }
+          /* 辨識期間被鎖定：結果一樣不要寫進去（要改就得先解鎖重新辨識） */
+          if (rec.locked) {
+            rec.ocrStatus = 'skipped'
+            rec.ocrProgress = 0
+            ocrDone.value++
+            continue
+          }
           rec.ocrText = passes.map((p) => p.text).join('\n----------\n')
           const { dates, amounts } = mergeParsed(
             passes.map((p) => parsePaymentText(p.text, p.heights)),
@@ -1404,7 +1432,7 @@ async function runOcr() {
         ocrDone.value++
       }
       if (ocrStop.value) break
-      queue = records.value.filter((r) => r.ocrStatus === 'pending')
+      queue = records.value.filter((r) => r.ocrStatus === 'pending' && !r.locked)
     }
   } finally {
     ocrBusy.value = false
@@ -1416,7 +1444,7 @@ async function runOcr() {
 
 function applyDefaultCurrency() {
   records.value.forEach((r) => {
-    if (r.currencyLocked || !r.amounts?.length) return
+    if (r.locked || r.currencyLocked || !r.amounts?.length) return
     const hit = r.amounts.find((a) => a.currency === defaultCurrency.value)
     if (hit) {
       r.currency = hit.currency
@@ -1431,6 +1459,11 @@ function applyDefaultCurrency() {
  */
 async function attachImage(record, file) {
   try {
+    /* 鎖定的記錄不能補圖（要換圖請先解除鎖定） */
+    if (record.locked) {
+      actionNotice.value = `「${record.fileName}」已鎖定，要補圖片請先解除鎖定。`
+      return
+    }
     let picked = file
     if (await isHeic(picked)) {
       try {
@@ -1482,7 +1515,9 @@ async function attachImage(record, file) {
 async function removeRecord(record) {
   const ok = await askConfirm({
     title: '確定要刪除這筆記錄嗎？',
-    text: `${record.fileName || '這筆記錄'} 的圖片與辨識結果都會一起刪掉。`,
+    text: record.locked
+      ? `${record.fileName || '這筆記錄'} 已鎖定，刪除後圖片與辨識結果都不會留下。`
+      : `${record.fileName || '這筆記錄'} 的圖片與辨識結果都會一起刪掉。`,
     confirmText: '刪除',
     icon: 'warning',
   })
@@ -1491,8 +1526,67 @@ async function removeRecord(record) {
   records.value = records.value.filter((r) => r.id !== record.id)
 }
 
+/* ---------- 更多：鎖定／解除與刪除（刪除鈕從卡片搬到這裡） ---------- */
+const moreDialogEl = ref(null)
+const moreRecord = ref(null)
+
+function openMoreRecord(record) {
+  moreRecord.value = record
+  nextTick(() => moreDialogEl.value?.showModal())
+}
+
+const closeMoreRecord = () => moreDialogEl.value?.close()
+
+/**
+ * 鎖定／解除。
+ * 鎖定過的記錄，之後就算解除，「這張圖有多個金額，用哪一個？」也不會再出現
+ * （amountChooserOff 會一直留著）。
+ */
+function setLocked(record, locked) {
+  if (!record) return
+  record.locked = locked
+  if (locked) record.amountChooserOff = true
+}
+
+/** 從「更多」按鎖定／解除；解除後就停在同一個對話框，可以接著刪除或關閉 */
+function toggleLockFromMore() {
+  const record = moreRecord.value
+  if (!record) return
+  setLocked(record, !record.locked)
+  actionNotice.value = record.locked
+    ? `已鎖定「${record.fileName}」。這筆記錄的欄位、受益人、重新辨識與補圖都停用了，圖片還是可以放大看。`
+    : `已解除鎖定「${record.fileName}」。`
+}
+
+/** 「更多」裡的刪除：先把對話框關掉，SweetAlert2 才不會被壓在下面 */
+async function deleteFromMore() {
+  const record = moreRecord.value
+  if (!record) return
+  closeMoreRecord()
+  /* 等對話框真的關好（close 事件是非同步的）再跳確認視窗 */
+  await nextTick()
+  await removeRecord(record)
+}
+
+/**
+ * 純文字模式點到已鎖定的那一列：先問要不要解除。
+ * 使用者按「解除並修改」就解除鎖定，接著照原本的動作繼續（等於解鎖後直接改）。
+ */
+async function unlockToEdit(record) {
+  const ok = await askConfirm({
+    title: '這筆記錄已鎖定',
+    text: `${record.fileName} 已經鎖定，要修改就要先解除。`,
+    confirmText: '解除並修改',
+    icon: 'warning',
+  })
+  if (!ok) return false
+  setLocked(record, false)
+  return true
+}
+
 /* 辨識失敗或逾時後，讓使用者可以重試 */
 function retryOcr(record) {
+  if (record.locked) return
   record.ocrStatus = 'pending'
   record.ocrError = ''
   record.ocrProgress = 0
@@ -1841,6 +1935,8 @@ function serializeRecord(r) {
     amount: r.amount,
     paidAtText: r.paidAtText,
     paidAtManual: r.paidAtManual,
+    locked: !!r.locked,
+    amountChooserOff: !!r.amountChooserOff,
     payerId: r.payerId,
     beneficiaryIds: [...r.beneficiaryIds],
     /* 人物名字的快照：人物不見時才有辦法把他補回來（見 lib/persons.js） */
@@ -2444,13 +2540,17 @@ onUnmounted(() => {
               v-for="(r, i) in records"
               :key="r.id"
               class="plain-row"
-              :class="{ on: selectedId === r.id }"
+              :class="{ on: selectedId === r.id, locked: r.locked }"
               @click="selectRecord(r)"
             >
               <td
                 class="plain-seq"
-                :title="`來源：${r.source || '本機'}｜點一下可重新命名`"
-                @click="renameSource(r.source || '本機')"
+                :title="
+                  r.locked
+                    ? '這筆記錄已鎖定｜點一下可以解除'
+                    : `來源：${r.source || '本機'}｜點一下可重新命名`
+                "
+                @click="renameSourceFrom(r)"
               >
                 {{ seqLabels.get(r.id) ?? '' }}
               </td>
@@ -2483,9 +2583,10 @@ onUnmounted(() => {
           :now="nowMs"
           @view="openViewer"
           @remove="removeRecord"
+          @more="openMoreRecord"
           @retry="retryOcr"
           @skip="skipOcr"
-          @rename-source="renameSource"
+          @rename-source="renameSourceFrom"
           @pick-note="onPickNoteCategory"
           @save-note="onSaveNoteCategory"
           @attach="attachImage"
@@ -2565,6 +2666,41 @@ onUnmounted(() => {
           <button type="submit" class="btn btn-primary">確定並匯入</button>
         </div>
       </form>
+    </dialog>
+
+    <!-- 更多：鎖定／解除與刪除（刪除鈕從卡片搬到這裡，免得誤按） -->
+    <dialog ref="moreDialogEl" class="dialog more" @close="moreRecord = null">
+      <h3 class="dialog-head">更多</h3>
+      <div v-if="moreRecord" class="dialog-body">
+        <p class="more-title">
+          <span class="more-seq">{{ seqLabels.get(moreRecord.id) ?? '' }}</span>
+          <span class="more-file" :title="moreRecord.fileName">{{ moreRecord.fileName }}</span>
+        </p>
+
+        <p v-if="moreRecord.locked" class="more-state more-state-locked">
+          已鎖定：這筆記錄的付錢人、付款時間、金額、備注、受益人、重新辨識與補圖都不能改，
+          圖片還是可以按「圖片」放大看。
+        </p>
+        <p v-else class="more-state">
+          鎖定之後，這筆記錄的欄位、受益人、重新辨識與補圖都會停用（圖片還是可以放大看）；
+          之後按「解除」就會恢復正常編輯，但「這張圖有多個金額，用哪一個？」不會再出現。
+        </p>
+
+        <button
+          type="button"
+          class="btn more-lock"
+          :class="{ 'btn-primary': !moreRecord.locked }"
+          @click="toggleLockFromMore"
+        >
+          {{ moreRecord.locked ? '解除鎖定' : '鎖定這筆記錄' }}
+        </button>
+        <button type="button" class="btn btn-danger more-delete" @click="deleteFromMore">
+          刪除這筆記錄
+        </button>
+      </div>
+      <div class="dialog-foot">
+        <button type="button" class="btn" @click="closeMoreRecord()">關閉</button>
+      </div>
     </dialog>
 
     <dialog ref="viewerEl" class="dialog viewer" @close="viewing = null">
@@ -2940,6 +3076,28 @@ onUnmounted(() => {
 
 .plain-row.on .plain-seq {
   color: var(--accent);
+  font-weight: 600;
+}
+
+/* 已鎖定的那一列：框改成玫瑰色（跟卡片一樣），點下去只會問要不要解除 */
+.plain-row.locked td {
+  box-shadow: inset 0 2px 0 var(--lock), inset 0 -2px 0 var(--lock);
+}
+
+.plain-row.locked td:first-child {
+  box-shadow: inset 2px 0 0 var(--lock), inset 0 2px 0 var(--lock), inset 0 -2px 0 var(--lock);
+}
+
+.plain-row.locked td:last-child {
+  box-shadow: inset -2px 0 0 var(--lock), inset 0 2px 0 var(--lock), inset 0 -2px 0 var(--lock);
+}
+
+.plain-row.locked.on td {
+  background: var(--lock-soft);
+}
+
+.plain-row.locked .plain-seq {
+  color: var(--lock-dark);
   font-weight: 600;
 }
 
@@ -3351,6 +3509,62 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+}
+
+/* ---------- 更多對話框 ---------- */
+.more-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+  font-weight: 600;
+}
+
+.more-seq {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.more-file {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.more-state {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* 已鎖定：跟卡片一樣的玫瑰色，一眼看出現在是什麼狀態 */
+.more-state-locked {
+  border-color: var(--lock);
+  background: var(--lock-soft);
+  color: var(--lock-dark);
+}
+
+.more-lock,
+.more-delete {
+  width: 100%;
+}
+
+/* 刪除排在最後、跟鎖定分開一點，才不會按錯 */
+.more-delete {
+  margin-top: 2px;
 }
 
 .alert {

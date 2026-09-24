@@ -17,6 +17,10 @@
   --rose: #a8446a;
   --rose-soft: #fbeaf0;
   --rose-line: #e0b4c5;
+  /* 鎖定：卡片外框與標記用這個顏色 */
+  --lock: #e07297;
+  --lock-dark: #b34a70;
+  --lock-soft: #fdeef4;
   --radius: 14px;
   --radius-sm: 9px;
   --shadow-sm: 0 1px 2px rgba(26, 30, 24, 0.05);

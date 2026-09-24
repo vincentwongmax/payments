@@ -418,6 +418,31 @@ const second = mergeRecords(first.added, restored.records)
 assert.equal(second.added.length, 0)
 assert.equal(second.skipped, 2)
 
+/* ---------- 鎖定與「多金額選項不再出現」也要跟著備份走 ---------- */
+const lockedBackup = await toBackup(
+  [
+    makeRecord({ id: 'r9', locked: true, amountChooserOff: true }),
+    makeRecord({ id: 'r10', hash: 'h10' }),
+  ],
+  personList,
+  '',
+  encode,
+)
+assert.equal(lockedBackup.records[0].locked, true, '鎖定要寫進備份')
+assert.equal(lockedBackup.records[0].amountChooserOff, true, '不再顯示多金額選項也要寫進備份')
+assert.equal(lockedBackup.records[1].locked, false)
+const lockedRestored = await fromBackup(lockedBackup, decode)
+assert.equal(lockedRestored.records[0].locked, true, '匯入後仍然是鎖定')
+assert.equal(lockedRestored.records[0].amountChooserOff, true)
+assert.equal(lockedRestored.records[1].amountChooserOff, false)
+/* 舊備份沒有這兩個欄位時，一律當成沒鎖定 */
+const legacy = await fromBackup(
+  { app: 'payment-records', version: 1, records: [{ id: 'old', fileName: 'x.png' }] },
+  decode,
+)
+assert.equal(legacy.records[0].locked, false)
+assert.equal(legacy.records[0].amountChooserOff, false)
+
 /* ---------- 人物對齊（別名） ---------- */
 const existingPeople = [
   { id: 'a1', name: 'Vincent', isSelf: true, aliases: [] },

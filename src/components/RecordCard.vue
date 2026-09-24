@@ -18,6 +18,7 @@ const props = defineProps({
 const emit = defineEmits([
   'view',
   'remove',
+  'more',
   'retry',
   'skip',
   'rename-source',
@@ -28,6 +29,17 @@ const emit = defineEmits([
 ])
 
 const r = computed(() => props.record)
+
+/* 鎖定：欄位、受益人、重新辨識、補圖全部停用（圖片還是可以放大看） */
+const locked = computed(() => !!r.value.locked)
+
+/*
+ * 「這張圖有多個金額，用哪一個？」：鎖定時不顯示；而且只要鎖定過一次，
+ * 之後解除也不會再出現（amountChooserOff）。
+ */
+const showAmountChooser = computed(
+  () => (r.value.amounts?.length ?? 0) > 1 && !locked.value && !r.value.amountChooserOff,
+)
 
 /* 點卡片任何地方就選取這一筆（點空白處由 App.vue 取消） */
 const selectSelf = () => emit('select', props.record)
@@ -100,7 +112,7 @@ function onTypePaidAt(event) {
 
 /* 第一段：按右邊的日曆圖示才會打開（點輸入框只聚焦，方便直接打字） */
 function openDateStep() {
-  if (step.value !== 'idle') return
+  if (locked.value || step.value !== 'idle') return
   datePicker?.open()
 }
 
@@ -189,8 +201,8 @@ const statusKind = (rec) => {
   return (rec.amounts?.length ?? 0) > 0 && rec.paidAtText ? 'done' : 'warn'
 }
 
-/* 失敗或已跳過的，可以點標籤重新辨識 */
-const canRetry = (rec) => rec.ocrStatus === 'error' || rec.ocrStatus === 'skipped'
+/* 失敗或已跳過的，可以點標籤重新辨識（鎖定的不行） */
+const canRetry = (rec) => !rec.locked && (rec.ocrStatus === 'error' || rec.ocrStatus === 'skipped')
 
 /* 人物清單裡找不到的付錢人／受益人（自動補不回來的那種） */
 const payerGone = computed(
@@ -225,7 +237,7 @@ function toggleBeneficiary(id) {
 </script>
 
 <template>
-  <article class="rec" :class="{ on: active }" @click="selectSelf">
+  <article class="rec" :class="{ on: active, locked }" @click="selectSelf">
     <div class="thumbs">
       <button
         v-if="r.url"
@@ -239,12 +251,13 @@ function toggleBeneficiary(id) {
       <button v-if="r.url" type="button" class="thumb-btn" title="點圖放大" @click="emit('view', r)">
         <img class="thumb" :src="r.url" :alt="r.fileName" />
       </button>
-      <!-- 沒有圖片時，點這格就能補一張圖上去 -->
+      <!-- 沒有圖片時，點這格就能補一張圖上去（鎖定的不行） -->
       <button
         v-else
         type="button"
         class="thumb thumb-empty"
-        title="點一下上傳這筆的圖片"
+        :disabled="locked"
+        :title="locked ? '已鎖定，要補圖片請先解除' : '點一下上傳這筆的圖片'"
         @click="pickEl.click()"
       >
         無圖
@@ -271,6 +284,23 @@ function toggleBeneficiary(id) {
         >
           {{ statusText(r) }}
         </button>
+        <!-- 鎖定標記：進「更多」才能解除 -->
+        <span v-if="locked" class="lock-tag" title="這筆記錄已鎖定，按「更多」可以解除">
+          <svg
+            viewBox="0 0 24 24"
+            width="11"
+            height="11"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.4"
+            stroke-linecap="round"
+            aria-hidden="true"
+          >
+            <rect x="5" y="11" width="14" height="9" rx="2" />
+            <path d="M8 11V8a4 4 0 0 1 8 0v3" />
+          </svg>
+          已鎖定
+        </span>
         <!-- 加入 App 的時間：手機版在標題右邊、桌機版在「圖片」左邊 -->
         <span class="spacer" />
         <button
@@ -289,18 +319,27 @@ function toggleBeneficiary(id) {
         <button
           v-if="r.ocrStatus === 'running' || r.ocrStatus === 'pending'"
           class="btn btn-icon"
+          :disabled="locked"
           title="這張不要辨識（圖與其他欄位都留著）"
           @click="emit('skip', r)"
         >
           跳過
         </button>
         <button v-if="r.url" class="btn btn-icon" @click="emit('view', r)">圖片</button>
-        <button class="btn btn-icon btn-danger" @click="emit('remove', r)">刪除</button>
+        <!-- 刪除搬到「更多」裡面（鎖定／解除也在那裡） -->
+        <button
+          class="btn btn-icon"
+          :class="{ 'btn-more-locked': locked }"
+          :title="locked ? '已鎖定：可以解除或刪除這筆記錄' : '鎖定、解除或刪除這筆記錄'"
+          @click="emit('more', r)"
+        >
+          更多
+        </button>
         <button
           type="button"
           class="seq"
           :title="`來源：${r.source || '本機'}｜點一下可重新命名`"
-          @click="emit('rename-source', r.source || '本機')"
+          @click="emit('rename-source', r)"
         >
           {{ indexLabel }}
         </button>
@@ -309,7 +348,7 @@ function toggleBeneficiary(id) {
       <div class="grid">
         <label class="field">
           <span class="lbl">付錢人</span>
-          <select v-model="r.payerId" class="input" :disabled="!persons.length">
+          <select v-model="r.payerId" class="input" :disabled="locked || !persons.length">
             <option value="">{{ persons.length ? '請選擇' : '請先新增人物' }}</option>
             <!-- 記錄指到的人物已經不在清單裡（補不回來時）：至少要看得出這一筆有問題 -->
             <option v-if="payerGone" :value="r.payerId">⚠ 找不到這位人物，請重新選擇</option>
@@ -328,6 +367,7 @@ function toggleBeneficiary(id) {
               class="input time-input"
               placeholder="YYYY-MM-DD HH:mm"
               :value="paidAtDisplay"
+              :disabled="locked"
               @input="onTypePaidAt"
             />
             <!-- 第二段：同一個位置換成原生時間選擇器（iPhone 是滾輪） -->
@@ -351,11 +391,12 @@ function toggleBeneficiary(id) {
             >
               完成
             </button>
-            <!-- 只有按這個日曆按鈕才會打開選擇器 -->
+            <!-- 只有按這個日曆按鈕才會打開選擇器（鎖定時不給按） -->
             <button
               v-if="step === 'idle'"
               type="button"
               class="time-pick-btn"
+              :disabled="locked"
               title="選日期與時間"
               aria-label="選日期與時間"
               @click="openDateStep"
@@ -377,6 +418,7 @@ function toggleBeneficiary(id) {
             class="input amount"
             inputmode="decimal"
             placeholder="0.00"
+            :disabled="locked"
             @input="onAmountInput"
           />
         </label>
@@ -384,11 +426,17 @@ function toggleBeneficiary(id) {
         <div class="field note-field">
           <span class="lbl">備注</span>
           <span class="note-slot">
-            <input v-model="r.note" class="input note-input" placeholder="例如：公司聚餐" />
+            <input
+              v-model="r.note"
+              class="input note-input"
+              placeholder="例如：公司聚餐"
+              :disabled="locked"
+            />
             <!-- 只有按這個圖示才會打開常用分類清單（跟付款時間的日曆按鈕同一個做法） -->
             <button
               type="button"
               class="note-pick-btn"
+              :disabled="locked"
               title="從常用分類挑一個"
               aria-label="從常用分類挑一個"
               @click="emit('pick-note', r)"
@@ -420,6 +468,7 @@ function toggleBeneficiary(id) {
             type="button"
             class="chip chip-all"
             :class="{ on: allSelected }"
+            :disabled="locked"
             @click="toggleAllBeneficiaries"
           >
             {{ allSelected ? '取消全選' : '全選' }}
@@ -430,6 +479,7 @@ function toggleBeneficiary(id) {
             type="button"
             class="chip"
             :class="{ on: r.beneficiaryIds.includes(p.id) }"
+            :disabled="locked"
             @click="toggleBeneficiary(p.id)"
           >
             {{ p.name }}
@@ -441,7 +491,7 @@ function toggleBeneficiary(id) {
         </p>
       </div>
 
-      <div v-if="r.amounts?.length > 1" class="field">
+      <div v-if="showAmountChooser" class="field">
         <span class="lbl">這張圖有多個金額，用哪一個？</span>
         <div class="chips">
           <button
@@ -508,6 +558,67 @@ function toggleBeneficiary(id) {
   box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow);
 }
 
+/*
+ * 已鎖定：外框改成玫瑰色（跟「已鎖定」標記同一個顏色），
+ * 放在 .rec.on 後面，所以鎖定時玫瑰色優先。
+ */
+.rec.locked {
+  border-color: var(--lock);
+}
+
+.rec.locked:hover {
+  border-color: var(--lock);
+}
+
+.rec.locked.on {
+  border-color: var(--lock);
+  box-shadow: 0 0 0 3px var(--lock-soft), var(--shadow);
+}
+
+/* 鎖定時欄位是灰的、不能打字，但要看得出內容 */
+.rec.locked .input:disabled,
+.rec.locked .time-pick-btn:disabled,
+.rec.locked .note-pick-btn:disabled {
+  color: var(--text);
+  background: var(--surface);
+  opacity: 0.72;
+}
+
+.rec.locked .time-pick-btn:disabled,
+.rec.locked .note-pick-btn:disabled {
+  background: transparent;
+}
+
+.rec.locked .chip:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.rec.locked .chip.on:disabled {
+  opacity: 1;
+}
+
+.lock-tag {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--lock);
+  border-radius: 999px;
+  background: var(--lock-soft);
+  color: var(--lock-dark);
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+/* 已鎖定的「更多」按鈕給一點提示色，不然看不出這張卡片不能改 */
+.btn-more-locked {
+  border-color: var(--lock);
+  color: var(--lock-dark);
+}
+
 .thumb-btn {
   display: block;
   width: 100%;
@@ -551,6 +662,12 @@ function toggleBeneficiary(id) {
 .thumb-empty:hover {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+/* 鎖定時不能補圖：滑過去看得到原因（title），游標也不要騙人 */
+.thumb-empty:disabled {
+  cursor: default;
+  opacity: 0.65;
 }
 
 .field-head {
