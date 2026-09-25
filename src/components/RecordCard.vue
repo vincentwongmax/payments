@@ -575,13 +575,41 @@ function toggleBeneficiary(id) {
   box-shadow: 0 0 0 3px var(--lock-soft), var(--shadow);
 }
 
+/*
+ * 鎖定：整張卡片的文字都變灰（檔名、欄位標籤、欄位內容、受益人、加入時間…），
+ * 只留「已辨識」那顆狀態標籤與「已鎖定」標記有顏色。
+ * 「圖片」「更多」是還按得動的按鈕，所以不變灰。
+ */
+.rec.locked .file,
+.rec.locked .lbl,
+.rec.locked .hint,
+.rec.locked .input,
+.rec.locked .chip,
+.rec.locked .thumb-empty,
+.rec.locked .stamp {
+  color: var(--muted);
+}
+
+.rec.locked .lbl,
+.rec.locked .stamp {
+  opacity: 0.85;
+}
+
+/* 選到的受益人原本是綠色，鎖定時一起灰掉 */
+.rec.locked .chip.on,
+.rec.locked .chip-all {
+  border-color: var(--line-strong);
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
 /* 鎖定時欄位是灰的、不能打字，但要看得出內容 */
 .rec.locked .input:disabled,
 .rec.locked .time-pick-btn:disabled,
 .rec.locked .note-pick-btn:disabled {
-  color: var(--text);
+  color: var(--muted);
   background: var(--surface);
-  opacity: 0.72;
+  opacity: 0.75;
 }
 
 .rec.locked .time-pick-btn:disabled,

@@ -2612,7 +2612,7 @@ onUnmounted(() => {
                 v-for="(cell, j) in plainRows[i] ?? []"
                 :key="j"
                 class="plain-cell"
-                title="點一下修改"
+                :title="r.locked ? '這筆記錄已鎖定｜點一下可以解除' : '點一下修改'"
                 @click="editPlainCell(r, ['payer', 'beneficiaries', 'amount', 'note', 'time'][j])"
               >
                 {{ cell || '—' }}
@@ -3133,9 +3133,16 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
-/* 已鎖定的那一列：框改成玫瑰色（跟卡片一樣），點下去只會問要不要解除 */
+/* 已鎖定的那一列：框改成玫瑰色（跟卡片一樣），內容文字全部變灰，點下去只會問要不要解除 */
 .plain-row.locked td {
+  color: var(--muted);
   box-shadow: inset 0 2px 0 var(--lock), inset 0 -2px 0 var(--lock);
+}
+
+/* 鎖定時滑過去看起來像「不能改」，不要再用綠色騙人 */
+.plain-row.locked .plain-cell:hover {
+  background: var(--lock-soft);
+  color: var(--muted);
 }
 
 .plain-row.locked td:first-child {
