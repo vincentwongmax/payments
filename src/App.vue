@@ -2622,8 +2622,10 @@ onUnmounted(() => {
             placeholder="貼上分享連結…"
             @keyup.enter="applyLinkInput"
           />
+          <!-- 生成：把現在的人物、預設幣別與備注分類做成連結（放在「套用」左邊） -->
+          <button class="btn btn-icon generate-btn" @click="generateShareLink">生成</button>
           <button
-            class="btn btn-primary"
+            class="btn btn-icon btn-primary"
             :class="{ 'is-busy': !linkInput.trim() }"
             :aria-disabled="!linkInput.trim()"
             @click="applyLinkInput"
@@ -2631,12 +2633,8 @@ onUnmounted(() => {
             套用
           </button>
         </div>
-        <!-- 生成：把現在的人物、預設幣別與備注分類做成連結 -->
-        <div class="head-actions">
-          <button class="btn" @click="generateShareLink">生成現在的連結</button>
-        </div>
         <p class="hint">
-          「生成現在的連結」會把<strong>現在的人物、預設幣別與所有備注分類</strong>做成上面那種連結，
+          「生成」會把<strong>現在的人物、預設幣別與所有備注分類</strong>做成上面那種連結，
           填進框裡並複製到剪貼簿，可以傳給別人（或自己在另一台裝置開）。
         </p>
         <p class="hint">
@@ -3905,10 +3903,10 @@ onUnmounted(() => {
   text-align: right;
 }
 
-/* 分享連結：輸入框 + 套用（設定頁） */
+/* 分享連結：輸入框 + 生成 + 套用（手機上也要擠得進一行） */
 .apply-link-row {
   display: flex;
-  gap: 8px;
+  gap: 6px;
 }
 
 .apply-link-row .input {
@@ -3918,6 +3916,7 @@ onUnmounted(() => {
 
 .apply-link-row .btn {
   flex: 0 0 auto;
+  padding: 0 10px;
 }
 
 .apply-link-row code,
