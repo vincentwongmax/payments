@@ -5,6 +5,15 @@ import { addAlias, blobToBase64, fromBackup, mergeRecords, normalizeName, remapR
 import { clear, del, getAll, put, wipe } from './lib/db.js'
 import { compressImage, extFromMime, fileToStored, heicToJpeg, isHeic, readImageTime, sniffImageType, storedToFile } from './lib/image.js'
 import { hashFile } from './lib/md5.js'
+import {
+  findImageOwner,
+  imageCount,
+  imageHashes,
+  MAIN_ID,
+  promoteImage,
+  recordImages,
+  removeImage,
+} from './lib/images.js'
 import { mergeParsed, parsePaymentText, pickDate, pickDefaultAmount, preloadOcr, recognizePasses } from './lib/ocr.js'
 /* 對話框統一走 src/lib/dialog.js（SweetAlert2，樣式在 style.css） */
 import { askChecklist, askConfirm, askText, askTextWithList, pickFromList, warn } from './lib/dialog.js'
@@ -375,6 +384,8 @@ function baseRecord() {
     locked: false,
     /* 鎖定過一次之後，「這張圖有多個金額，用哪一個？」就不再出現 */
     amountChooserOff: false,
+    /* 同一個記錄的其他圖片（主要圖片在 file／url，這裡放後期補上的） */
+    extraImages: [],
     payerId: defaultPayerId.value,
     beneficiaryIds: [],
     note: '',
@@ -990,8 +1001,8 @@ async function addFiles(files) {
   /* 依圖片本身的時間排序後，接在最後一筆之後新增 */
   picked.sort((a, b) => a.time.ms - b.time.ms)
 
-  /* MD5 完全相同就是同一張圖，不新增記錄 */
-  const known = new Set(records.value.map((r) => r.hash).filter(Boolean))
+  /* MD5 完全相同就是同一張圖（主要圖片或附加圖片都算），不新增記錄 */
+  const known = new Set(records.value.flatMap((r) => imageHashes(r)))
   const skipped = []
   let added = 0
   for (const { file, time, hash } of picked) {
@@ -1503,11 +1514,11 @@ async function attachImage(record, file) {
     }
 
     const hash = await hashFile(picked)
-    /* 同一張圖已經在別的記錄裡就擋下來，免得同一筆帳記兩次 */
-    const twin = records.value.find((r) => r.id !== record.id && r.hash && r.hash === hash)
+    /* 同一張圖已經用過就擋下來（別筆記錄的主要圖片或附加圖片都算），免得同一筆帳記兩次 */
+    const twin = findImageOwner(records.value, hash)
     if (twin) {
-      actionNotice.value = `這張圖已經用在「${twin.fileName}」（${
-        seqLabels.value.get(twin.id) ?? ''
+      actionNotice.value = `這張圖已經用在「${twin.record.fileName}」（${
+        seqLabels.value.get(twin.record.id) ?? ''
       }），沒有重複加上去。`
       return
     }
@@ -1624,16 +1635,170 @@ function onAppError(event) {
   actionNotice.value = `程式發生錯誤（畫面可能沒有更新）：${message}\n如果剛剛上傳／貼上的圖片沒出現，請按下面「知道了」後再試一次；再不行就重新整理。`
 }
 
-/* 看圖 */
+/* ---------- 看圖（一筆記錄可以有很多張） ---------- */
 const viewing = ref(null)
 const viewerEl = ref(null)
+/* 在看圖頁選「上傳圖片」用的檔案欄位 */
+const viewerPickEl = ref(null)
 const zoom = ref(1)
+/* 現在看的是第幾張（0 = 主要圖片） */
+const viewIndex = ref(0)
+/* 看圖頁的小訊息（加入幾張、哪張重複了…） */
+const viewerMsg = ref('')
+
+const viewingImages = computed(() => recordImages(viewing.value))
+const currentImage = computed(() => viewingImages.value[viewIndex.value] ?? viewingImages.value[0] ?? null)
 
 function openViewer(record) {
   if (!record.url) return
   viewing.value = record
+  viewIndex.value = 0
+  viewerMsg.value = ''
   zoom.value = 1
   nextTick(() => viewerEl.value.showModal())
+}
+
+function closeViewer() {
+  viewerEl.value?.close()
+}
+
+/* 換上一張／下一張（繞回去） */
+function stepImage(delta) {
+  const total = viewingImages.value.length
+  if (total < 2) return
+  viewIndex.value = (viewIndex.value + delta + total) % total
+  viewerMsg.value = ''
+}
+
+/** 把目前這張換成主要圖片（縮圖、OCR 都用它） */
+function setViewerImageAsMain() {
+  const record = viewing.value
+  const image = currentImage.value
+  if (!record || !image || image.isMain) return
+  const { main, extras } = promoteImage(record, image.id)
+  record.file = main.file
+  record.url = main.url
+  record.hash = main.hash
+  record.fileTime = main.fileTime
+  record.fileTimeSource = main.fileTimeSource
+  record.extraImages = extras
+  /* 主要圖片換人了 → 用新的一張重新辨識金額與時間（自己填過的內容不覆蓋） */
+  record.ocrStatus = 'pending'
+  record.ocrProgress = 0
+  record.ocrError = ''
+  viewIndex.value = 0
+  viewerMsg.value = '已設為縮圖，並重新辨識這一張的金額與時間'
+  runOcr()
+}
+
+/** 刪掉目前這張圖片；按確認前先關掉對話框，免得確認視窗被壓在下面 */
+async function deleteViewerImage() {
+  const record = viewing.value
+  const image = currentImage.value
+  if (!record || !image) return
+  const wasMain = image.isMain
+  const at = viewIndex.value
+  const remaining = viewingImages.value.length - 1
+  closeViewer()
+  await nextTick()
+  const ok = await askConfirm({
+    title: '刪除這張圖片？',
+    text:
+      `這張圖片會從「${record.fileName}」移除` +
+      (remaining > 0
+        ? wasMain
+          ? '，並改用下一張當縮圖。'
+          : `，這筆記錄還有 ${remaining} 張圖片。`
+        : '，這筆記錄就變成沒有圖片的記錄（欄位資料都留著）。'),
+    confirmText: '刪除',
+    icon: 'warning',
+  })
+  if (!ok) {
+    reopenViewer(record, at)
+    return
+  }
+  const { main, extras, removed } = removeImage(record, image.id)
+  record.file = main.file
+  record.url = main.url
+  record.hash = main.hash
+  record.fileTime = main.fileTime
+  record.fileTimeSource = main.fileTimeSource
+  record.extraImages = extras
+  revoke(removed?.url)
+  /* 刪掉的是主要圖片而且還有別的圖片 → 新的主要圖片要重新辨識 */
+  if (wasMain && main.file) {
+    record.ocrStatus = 'pending'
+    record.ocrProgress = 0
+    record.ocrError = ''
+    runOcr()
+  }
+  const nextAt = Math.min(at, recordImages(record).length - 1)
+  if (record.url) reopenViewer(record, nextAt)
+}
+
+/** 重新打開看圖（刪圖片時關掉過） */
+function reopenViewer(record, index = 0) {
+  if (!record?.url) return
+  viewing.value = record
+  viewIndex.value = Math.max(0, Math.min(index, recordImages(record).length - 1))
+  zoom.value = 1
+  viewerMsg.value = ''
+  nextTick(() => viewerEl.value?.showModal())
+}
+
+/* 在看圖頁後期補上圖片（可以一次選多張） */
+async function addViewerImages(event) {
+  const files = [...(event.target.files ?? [])]
+  event.target.value = ''
+  const record = viewing.value
+  if (!record || !files.length) return
+  const notices = []
+  const added = []
+  for (const file of files) {
+    try {
+      let picked = file
+      if (await isHeic(picked)) {
+        try {
+          picked = await heicToJpeg(picked)
+        } catch {
+          /* 解不開就用原檔，下面 canDecode 會擋 */
+        }
+      }
+      if (!(await canDecode(picked))) {
+        notices.push(`${file.name}：這個瀏覽器讀不到`)
+        continue
+      }
+      const hash = await hashFile(picked)
+      const twin = findImageOwner(records.value, hash)
+      if (twin) {
+        notices.push(
+          `${file.name}：已經用在「${twin.record.fileName}」（${
+            seqLabels.value.get(twin.record.id) ?? ''
+          }）`,
+        )
+        continue
+      }
+      const time = await readImageTime(picked)
+      added.push({
+        id: uid(),
+        file: picked,
+        url: URL.createObjectURL(picked),
+        fileName: file.name,
+        hash,
+        fileTime: time.ms,
+        fileTimeSource: time.source,
+      })
+    } catch (e) {
+      notices.push(`${file.name}：${e?.message ?? e}`)
+    }
+  }
+  if (added.length) {
+    record.extraImages = [...(record.extraImages ?? []), ...added]
+    viewerMsg.value = `已加入 ${added.length} 張圖片`
+  }
+  if (notices.length) {
+    viewerMsg.value = `${viewerMsg.value ? `${viewerMsg.value}；` : ''}${notices.join('；')}`
+  }
 }
 
 const zoomBy = (factor) => {
@@ -1967,6 +2132,14 @@ function serializeRecord(r) {
     paidAtManual: r.paidAtManual,
     locked: !!r.locked,
     amountChooserOff: !!r.amountChooserOff,
+    /* 附加圖片只存「是哪一張」的資料，bytes 由 persist() 補上 */
+    extraImages: (r.extraImages ?? []).map((img) => ({
+      id: img.id,
+      fileName: img.fileName ?? '',
+      hash: img.hash ?? '',
+      fileTime: img.fileTime ?? 0,
+      fileTimeSource: img.fileTimeSource ?? 'file',
+    })),
     payerId: r.payerId,
     beneficiaryIds: [...r.beneficiaryIds],
     /* 人物名字的快照：人物不見時才有辦法把他補回來（見 lib/persons.js） */
@@ -1994,9 +2167,21 @@ async function persist() {
       const sig = signature(plain)
       if (savedSigs.get(r.id) === sig) continue
 
-      if (r.file) {
+      if (r.file || r.extraImages?.length) {
         try {
-          Object.assign(plain, await fileToStored(r.file))
+          if (r.file) Object.assign(plain, await fileToStored(r.file))
+          /* 附加圖片的 bytes 也要一起存（附加圖片讀不到就整筆先不覆蓋） */
+          plain.extraImages = []
+          for (const img of r.extraImages ?? []) {
+            plain.extraImages.push({
+              id: img.id,
+              fileName: img.fileName ?? '',
+              hash: img.hash ?? '',
+              fileTime: img.fileTime ?? 0,
+              fileTimeSource: img.fileTimeSource ?? 'file',
+              ...(await fileToStored(img.file)),
+            })
+          }
         } catch {
           /* 讀不到就不要覆蓋原本那筆，免得把僅有的資料也弄掉 */
           broken.push(r.fileName)
@@ -2093,10 +2278,19 @@ onMounted(async () => {
       .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
       .map((r) => {
         const file = storedToFile(r)
+        const extraImages = (r.extraImages ?? [])
+          .map((img) => {
+            const extraFile = storedToFile({ ...img, fileName: `${r.fileName}-${img.id}` })
+            return extraFile
+              ? { ...img, file: extraFile, url: URL.createObjectURL(extraFile) }
+              : null
+          })
+          .filter(Boolean)
         return {
           ...r,
           file,
           url: file ? URL.createObjectURL(file) : '',
+          extraImages,
           ocrStatus: r.ocrStatus === 'running' ? 'pending' : r.ocrStatus,
         }
       })
@@ -2635,7 +2829,9 @@ onUnmounted(() => {
                 {{ cell || '—' }}
               </td>
               <td class="plain-img">
-                <button v-if="r.url" class="btn btn-icon" @click="openViewer(r)">圖片</button>
+                <button v-if="r.url" class="btn btn-icon" @click="openViewer(r)">
+                  圖片{{ imageCount(r) > 1 ? ` ${imageCount(r)}` : '' }}
+                </button>
               </td>
             </tr>
           </tbody>
@@ -2777,7 +2973,14 @@ onUnmounted(() => {
     <dialog ref="viewerEl" class="dialog viewer" @close="viewing = null">
       <div v-if="viewing" class="viewer-body">
         <div class="viewer-bar">
-          <span class="file" :title="viewing.fileName">{{ viewing.fileName }}</span>
+          <span class="file" :title="currentImage?.fileName || viewing.fileName">
+            {{ currentImage?.fileName || viewing.fileName }}
+          </span>
+          <!-- 這一筆有幾張圖片、現在看第幾張 -->
+          <span v-if="viewingImages.length > 1" class="img-counter">
+            {{ viewIndex + 1 }} / {{ viewingImages.length }}
+          </span>
+          <span v-else-if="viewingImages.length === 1" class="img-counter">1 / 1</span>
           <span class="hint">{{ fmtDateTime(viewing.fileTime) }}</span>
           <!-- 手機版：百分比放在日期右邊；桌機版這顆隱藏，用下面群組裡那顆 -->
           <span class="zoom-value only-rwd">{{ Math.round(zoom * 100) }}%</span>
@@ -2790,16 +2993,72 @@ onUnmounted(() => {
             <button type="button" class="btn btn-icon" @click="resetZoom">還原</button>
           </span>
         </div>
+
+        <!-- 上一張／下一張與圖片管理（鎖定時只能看） -->
+        <div class="viewer-gal">
+          <button
+            type="button"
+            class="btn btn-icon"
+            :class="{ 'is-busy': viewingImages.length < 2 }"
+            :aria-disabled="viewingImages.length < 2"
+            @click="stepImage(-1)"
+          >
+            上一張
+          </button>
+          <button
+            type="button"
+            class="btn btn-icon"
+            :class="{ 'is-busy': viewingImages.length < 2 }"
+            :aria-disabled="viewingImages.length < 2"
+            @click="stepImage(1)"
+          >
+            下一張
+          </button>
+          <span class="spacer" />
+          <template v-if="!viewing.locked">
+            <button type="button" class="btn btn-icon" @click="viewerPickEl.click()">
+              上傳圖片
+            </button>
+            <button
+              type="button"
+              class="btn btn-icon"
+              :class="{ 'is-busy': currentImage?.isMain }"
+              :aria-disabled="currentImage?.isMain"
+              title="把目前這張變成卡片的縮圖（並用它重新辨識）"
+              @click="setViewerImageAsMain"
+            >
+              設為縮圖
+            </button>
+            <button type="button" class="btn btn-icon btn-danger" @click="deleteViewerImage">
+              刪除這張
+            </button>
+          </template>
+          <span v-else class="hint">已鎖定：只能看圖，要加圖或刪圖請先解除</span>
+          <input
+            ref="viewerPickEl"
+            class="sr-only"
+            type="file"
+            accept="image/*"
+            multiple
+            @change="addViewerImages"
+          />
+        </div>
+
+        <p v-if="viewerMsg" class="viewer-msg">{{ viewerMsg }}</p>
+
         <div class="viewer-stage" @wheel.ctrl.prevent="zoomBy($event.deltaY < 0 ? 1.1 : 1 / 1.1)">
           <img
-            :src="viewing.url"
-            :alt="viewing.fileName"
+            v-if="currentImage"
+            :src="currentImage.url"
+            :alt="currentImage.fileName"
             :style="{ width: `${zoom * 100}%` }"
             @click="onViewerImageClick"
           />
         </div>
         <div class="viewer-foot">
-          <span class="hint hide-rwd">Ctrl + 滾輪也可以縮放</span>
+          <span class="hint hide-rwd">
+            Ctrl + 滾輪也可以縮放｜一筆記錄可以放多張圖片，第三顆按鈕是「設為縮圖」
+          </span>
           <span class="spacer" />
           <!-- 手機版才出現：縮放按鈕排在關閉的左邊（桌機版用上面那一組） -->
           <span class="zoom-group">
@@ -2807,7 +3066,7 @@ onUnmounted(() => {
             <button type="button" class="btn btn-icon" @click="zoomBy(1.25)">放大 ＋</button>
             <button type="button" class="btn btn-icon" @click="resetZoom">還原</button>
           </span>
-          <button type="button" class="btn" @click="viewerEl.close()">關閉</button>
+          <button type="button" class="btn" @click="closeViewer()">關閉</button>
         </div>
       </div>
     </dialog>
@@ -3568,6 +3827,40 @@ onUnmounted(() => {
   font-size: 13px;
   font-variant-numeric: tabular-nums;
   text-align: center;
+}
+
+/* 一筆記錄有幾張圖片時，標題旁邊顯示「2 / 3」 */
+.img-counter {
+  flex: none;
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 上一張／下一張與圖片管理那一排 */
+.viewer-gal {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.viewer-msg {
+  margin: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .viewer-stage {

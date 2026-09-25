@@ -46,6 +46,15 @@ import {
 import { md5Hex } from '../src/lib/md5.js'
 import { fromBackup, mergeRecords, remapRecords, resolvePersons, toBackup } from '../src/lib/backup.js'
 import { findIncomplete, incompleteMessage, missingFields } from '../src/lib/validate.js'
+import {
+  findImageOwner,
+  imageCount,
+  imageHashes,
+  MAIN_ID,
+  promoteImage,
+  recordImages,
+  removeImage,
+} from '../src/lib/images.js'
 
 /* ---------- 建立一張帶 EXIF 的假 JPEG ---------- */
 function buildJpeg({ ifdDateTime, originalDateTime }) {
@@ -397,6 +406,17 @@ const makeRecord = (over = {}) => ({
 const originals = [
   makeRecord(),
   makeRecord({ id: 'r2', fileName: 'b.png', file: { tag: 'BBB' }, hash: 'h2', note: '', amount: '' }),
+  /* 一筆有三張圖片的記錄：主要圖片＋兩張附加圖片 */
+  makeRecord({
+    id: 'r3',
+    fileName: 'c.png',
+    file: { tag: 'CCC' },
+    hash: 'h3',
+    extraImages: [
+      { id: 'e1', file: { tag: 'E1' }, fileName: 'c-2.png', hash: 'he1', fileTime: 5, fileTimeSource: 'file' },
+      { id: 'e2', file: { tag: 'E2' }, fileName: 'c-3.png', hash: 'he2', fileTime: 6, fileTimeSource: 'file' },
+    ],
+  }),
 ]
 const personList = [
   { id: 'p1', name: '我', isSelf: true },
@@ -411,13 +431,29 @@ assert.deepEqual(backup2.records, backup1.records, '匯入後的資料必須和�
 assert.deepEqual(backup2.persons, backup1.persons)
 assert.equal(backup2.defaultCurrency, 'MOP')
 
+/* 附加圖片也要跟著備份來回（base64 → File → base64） */
+assert.equal(backup1.records[2].images.length, 2, '兩張附加圖片都要寫進備份')
+assert.equal(backup1.records[2].images[0].image, 'B64:E1')
+assert.deepEqual(
+  backup1.records[2].images.map((i) => ({ hash: i.hash, fileTime: i.fileTime })),
+  [
+    { hash: 'he1', fileTime: 5 },
+    { hash: 'he2', fileTime: 6 },
+  ],
+)
+assert.equal(restored.records[2].extraImages.length, 2, '匯入後附加圖片還在')
+assert.deepEqual(
+  restored.records[2].extraImages.map((i) => i.file.tag),
+  ['E1', 'E2'],
+)
+
 /* 合併：空的全部進，再一次就全部略過 */
 const first = mergeRecords([], restored.records)
-assert.equal(first.added.length, 2)
+assert.equal(first.added.length, 3)
 assert.equal(first.skipped, 0)
 const second = mergeRecords(first.added, restored.records)
 assert.equal(second.added.length, 0)
-assert.equal(second.skipped, 2)
+assert.equal(second.skipped, 3)
 
 /* ---------- 鎖定與「多金額選項不再出現」也要跟著備份走 ---------- */
 const lockedBackup = await toBackup(
@@ -443,6 +479,8 @@ const legacy = await fromBackup(
 )
 assert.equal(legacy.records[0].locked, false)
 assert.equal(legacy.records[0].amountChooserOff, false)
+/* 舊備份沒有 images 欄位 → 空的附加圖片，不會壞掉 */
+assert.deepEqual(legacy.records[0].extraImages, [])
 
 /* ---------- 人物對齊（別名） ---------- */
 const existingPeople = [
@@ -910,6 +948,66 @@ assert.deepEqual(bad[2].missing, ['錢', '付款時間或備注'])
 assert.match(incompleteMessage(bad), /本機-d：缺 錢、付款時間或備注/)
 assert.match(incompleteMessage(bad, 1), /還有 2 筆/)
 assert.equal(findIncomplete(exportList.filter((r) => r.id === 'a')).length, 0)
+
+/* ---------- 多張圖片：主要圖片與附加圖片的排列 ---------- */
+const imgRec = {
+  fileName: 'IMG_1.PNG',
+  file: { tag: 'MAIN' },
+  url: 'blob:main',
+  hash: 'h-main',
+  fileTime: 111,
+  fileTimeSource: 'exif',
+  extraImages: [
+    { id: 'e1', file: { tag: 'E1' }, url: 'blob:e1', fileName: 'IMG_2.PNG', hash: 'h-e1', fileTime: 222, fileTimeSource: 'file' },
+    { id: 'e2', file: { tag: 'E2' }, url: 'blob:e2', fileName: 'IMG_3.PNG', hash: 'h-e2', fileTime: 333, fileTimeSource: 'file' },
+  ],
+}
+assert.equal(imageCount(imgRec), 3)
+assert.deepEqual(imageHashes(imgRec), ['h-main', 'h-e1', 'h-e2'])
+assert.deepEqual(recordImages(imgRec).map((i) => i.id), [MAIN_ID, 'e1', 'e2'])
+assert.equal(recordImages(imgRec)[0].isMain, true)
+assert.equal(recordImages(imgRec)[1].isMain, false)
+assert.equal(imageCount({ fileName: 'x', url: '', file: null }), 0, '沒有圖片就沒有清單')
+
+/* 換縮圖：e1 變主要圖片，原來的主要圖片退到附加圖片最前面，記錄的檔名不變 */
+const promoted = promoteImage(imgRec, 'e1')
+assert.equal(promoted.main.url, 'blob:e1')
+assert.equal(promoted.main.fileName, 'IMG_1.PNG', '換縮圖不會改記錄的檔名')
+assert.equal(promoted.main.hash, 'h-e1')
+assert.equal(promoted.main.fileTime, 222)
+assert.deepEqual(promoted.extras.map((i) => i.url), ['blob:main', 'blob:e2'], '原來的主要圖片排最前面')
+assert.notEqual(promoted.extras[0].id, MAIN_ID, '退下來的圖片要有自己的 id')
+assert.equal(imgRec.url, 'blob:main', '不要改到原本的 record')
+assert.equal(promoteImage(imgRec, MAIN_ID).main.url, 'blob:main', '已經是主要圖片就不動')
+assert.equal(promoteImage(imgRec, 'nope').extras.length, 2, '找不到就原樣回傳')
+
+/* 刪掉附加圖片 */
+const removedExtra = removeImage(imgRec, 'e2')
+assert.equal(removedExtra.main.url, 'blob:main')
+assert.deepEqual(removedExtra.extras.map((i) => i.id), ['e1'])
+assert.equal(removedExtra.removed.url, 'blob:e2')
+
+/* 刪掉主要圖片：第一張附加圖片遞補，記錄的檔名一樣不變 */
+const removedMain = removeImage(imgRec, MAIN_ID)
+assert.equal(removedMain.main.url, 'blob:e1')
+assert.equal(removedMain.main.fileName, 'IMG_1.PNG')
+assert.deepEqual(removedMain.extras.map((i) => i.id), ['e2'])
+assert.equal(removedMain.removed.url, 'blob:main')
+
+/* 只有一張附加圖片時刪掉它 → 變成無圖 */
+const onlyExtra = { fileName: 'a.png', file: null, url: '', hash: '', extraImages: [{ id: 'e1', file: { tag: 'E1' }, url: 'blob:e1', hash: 'h' }] }
+const removedLast = removeImage(onlyExtra, 'e1')
+assert.equal(removedLast.main.url, '')
+assert.deepEqual(removedLast.extras, [])
+assert.equal(removedLast.removed.url, 'blob:e1')
+
+/* 重複圖片的比對：主要圖片與附加圖片都要算 */
+const ownerList = [imgRec, { id: 'r2', hash: '', extraImages: [] }]
+assert.equal(findImageOwner(ownerList, 'h-main').imageId, MAIN_ID)
+assert.equal(findImageOwner(ownerList, 'h-e1').imageId, 'e1')
+assert.equal(findImageOwner(ownerList, 'h-e1').record.fileName, 'IMG_1.PNG')
+assert.equal(findImageOwner(ownerList, 'nope'), null)
+assert.equal(findImageOwner(ownerList, ''), null)
 
 /* ---------- PWA：離線可用需要的檔案 ---------- */
 const root = new URL('..', import.meta.url)

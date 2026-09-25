@@ -33,6 +33,9 @@ const r = computed(() => props.record)
 /* 鎖定：欄位、受益人、重新辨識、補圖全部停用（圖片還是可以放大看） */
 const locked = computed(() => !!r.value.locked)
 
+/* 這筆記錄有幾張圖片（主要圖片＋後期補上的），大於 1 時按鈕上會顯示張數 */
+const imageTotal = computed(() => (r.value.url ? 1 : 0) + (r.value.extraImages?.length ?? 0))
+
 /*
  * 「這張圖有多個金額，用哪一個？」：鎖定時不顯示；而且只要鎖定過一次，
  * 之後解除也不會再出現（amountChooserOff）。
@@ -325,7 +328,9 @@ function toggleBeneficiary(id) {
         >
           跳過
         </button>
-        <button v-if="r.url" class="btn btn-icon" @click="emit('view', r)">圖片</button>
+        <button v-if="r.url" class="btn btn-icon" @click="emit('view', r)">
+          圖片{{ imageTotal > 1 ? ` ${imageTotal}` : '' }}
+        </button>
         <!-- 刪除搬到「更多」裡面（鎖定／解除也在那裡） -->
         <button
           class="btn btn-icon"

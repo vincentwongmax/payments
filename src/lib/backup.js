@@ -36,6 +36,18 @@ export async function toBackup(records, persons, defaultCurrency, encodeImage = 
       records.map(async (r, seq) => {
         /* encodeImage 可以回傳 base64 字串，或 { base64, type }——壓縮後格式可能從 PNG 變成 JPEG */
         const encoded = r.file ? await encodeImage(r.file) : null
+        /* 附加圖片（後期補上的）也一起帶走 */
+        const extras = []
+        for (const img of r.extraImages ?? []) {
+          const buf = img.file ? await encodeImage(img.file) : null
+          extras.push({
+            image: typeof buf === 'string' ? buf : (buf?.base64 ?? ''),
+            fileType: buf?.type ?? img.file?.type ?? '',
+            hash: img.hash ?? '',
+            fileTime: img.fileTime ?? 0,
+            fileTimeSource: img.fileTimeSource ?? 'file',
+          })
+        }
         return {
           id: r.id,
           seq,
@@ -60,6 +72,7 @@ export async function toBackup(records, persons, defaultCurrency, encodeImage = 
           beneficiaryIds: [...(r.beneficiaryIds ?? [])],
           note: r.note ?? '',
           image: typeof encoded === 'string' ? encoded : (encoded?.base64 ?? ''),
+          images: extras,
         }
       }),
     ),
@@ -81,6 +94,20 @@ export async function fromBackup(payload, decodeImage = base64ToBlob) {
 
   const records = []
   for (const raw of [...payload.records].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))) {
+    /* 附加圖片：舊備份沒有這個欄位，沒有就是空陣列 */
+    const extraImages = []
+    for (const [i, img] of (raw.images ?? []).entries()) {
+      const file = img?.image ? await decodeImage(img.image, img.fileType ?? '') : null
+      if (!file) continue
+      extraImages.push({
+        id: `extra-${i + 1}`,
+        file,
+        fileName: `${raw.fileName ?? '圖片'}-${i + 2}`,
+        hash: img.hash ?? '',
+        fileTime: img.fileTime ?? 0,
+        fileTimeSource: img.fileTimeSource ?? 'file',
+      })
+    }
     records.push({
       id: raw.id ?? `imported-${records.length}`,
       createdAt: raw.createdAt ?? 0,
@@ -102,6 +129,7 @@ export async function fromBackup(payload, decodeImage = base64ToBlob) {
       paidAtManual: !!raw.paidAtManual,
       locked: !!raw.locked,
       amountChooserOff: !!raw.amountChooserOff,
+      extraImages,
       payerId: raw.payerId ?? '',
       beneficiaryIds: [...(raw.beneficiaryIds ?? [])],
       note: raw.note ?? '',
