@@ -45,7 +45,14 @@ import {
 } from '../src/lib/persons.js'
 import { md5Hex } from '../src/lib/md5.js'
 import { fromBackup, mergeRecords, remapRecords, resolvePersons, toBackup } from '../src/lib/backup.js'
-import { findIncomplete, incompleteMessage, missingFields } from '../src/lib/validate.js'
+import {
+  DEFAULT_EXPORT_RULES,
+  describeRules,
+  findIncomplete,
+  incompleteMessage,
+  missingFields,
+  normalizeRules,
+} from '../src/lib/validate.js'
 import {
   findImageOwner,
   imageCount,
@@ -948,6 +955,39 @@ assert.deepEqual(bad[2].missing, ['錢', '付款時間或備注'])
 assert.match(incompleteMessage(bad), /本機-d：缺 錢、付款時間或備注/)
 assert.match(incompleteMessage(bad, 1), /還有 2 筆/)
 assert.equal(findIncomplete(exportList.filter((r) => r.id === 'a')).length, 0)
+
+/* ---------- 匯出檢查：規則可以自己改 ---------- */
+assert.deepEqual(normalizeRules(null), DEFAULT_EXPORT_RULES, '沒有設定就用預設規則')
+assert.deepEqual(normalizeRules({ payer: 'off' }), { ...DEFAULT_EXPORT_RULES, payer: 'off' })
+assert.deepEqual(normalizeRules({ payer: '亂寫', timeNote: 'both' }), { ...DEFAULT_EXPORT_RULES, timeNote: 'both' }, '不認識的值要忽略')
+assert.equal(describeRules(DEFAULT_EXPORT_RULES), '付錢人・受益人・錢・時間或備注')
+assert.equal(describeRules({ ...DEFAULT_EXPORT_RULES, timeNote: 'both' }), '付錢人・受益人・錢・時間＋備注')
+assert.equal(describeRules({ payer: 'off', beneficiary: 'off', amount: 'off', timeNote: 'off' }), '不檢查')
+
+const blank = { payerId: '', beneficiaryIds: [], amount: '', paidAtText: '', note: '' }
+/* 全部關掉 → 什麼都不缺 */
+assert.deepEqual(missingFields(blank, { payer: 'off', beneficiary: 'off', amount: 'off', timeNote: 'off' }), [])
+/* 只檢查錢 */
+assert.deepEqual(missingFields(blank, { payer: 'off', beneficiary: 'off', amount: 'require', timeNote: 'off' }), ['錢'])
+/* 兩個都要 */
+assert.deepEqual(missingFields({ ...blank, payerId: 'p1' }, { ...DEFAULT_EXPORT_RULES, timeNote: 'both' }), [
+  '受益人',
+  '錢',
+  '付款時間',
+  '備注',
+])
+/* 只要付款時間／只要備注 */
+assert.deepEqual(missingFields({ ...blank, paidAtText: '2026-09-11 23:52' }, { payer: 'off', beneficiary: 'off', amount: 'off', timeNote: 'time' }), [])
+assert.deepEqual(missingFields({ ...blank, paidAtText: '2026-09-11 23:52' }, { payer: 'off', beneficiary: 'off', amount: 'off', timeNote: 'note' }), ['備注'])
+
+/* 單筆「不用檢查」：findIncomplete 要跳過它 */
+const flagged = [
+  { id: 'x', fileName: 'x.png', ...blank, checkExport: false },
+  { id: 'y', fileName: 'y.png', ...blank },
+]
+const flaggedBad = findIncomplete(flagged, (r) => r.fileName, DEFAULT_EXPORT_RULES)
+assert.equal(flaggedBad.length, 1, '設定成不用檢查的那一筆要跳過')
+assert.equal(flaggedBad[0].label, 'y.png')
 
 /* ---------- 多張圖片：主要圖片與附加圖片的排列 ---------- */
 const imgRec = {

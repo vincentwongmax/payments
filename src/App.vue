@@ -27,7 +27,7 @@ import {
   seedNoteCategories,
 } from './lib/notes.js'
 import { recordCells, recordsToText } from './lib/textExport.js'
-import { findIncomplete, incompleteMessage } from './lib/validate.js'
+import { findIncomplete, incompleteMessage, normalizeRules, describeRules, RULE_FIELDS, DEFAULT_EXPORT_RULES } from './lib/validate.js'
 import { missingPersonIds, personNameSnapshot, recordsUsingPerson, restoreMissingPersons } from './lib/persons.js'
 import { fmtDateTime, labelBySource, parseShareParams, safeFileNamePart, searchFromText, shareLinkKey, toAmountText, uid } from './lib/util.js'
 
@@ -780,16 +780,41 @@ async function editPlainCell(record, key) {
  */
 const checkBeforeExport = ref(true)
 
+/* 要檢查哪些欄位（使用者可以在設定頁改） */
+const exportRules = ref({ ...DEFAULT_EXPORT_RULES })
+
+/** 目前規則的一句話說明 */
+const exportRuleSummary = computed(() => describeRules(exportRules.value))
+
+/** 有幾筆會被檢查（沒被設成「不用檢查」的） */
+const exportCheckedCount = computed(() => records.value.filter((r) => r.checkExport !== false).length)
+
+/** 單筆要不要檢查 */
+function setExportCheck(record, checked) {
+  record.checkExport = checked
+}
+
+const setAllExportCheck = (checked) => {
+  records.value.forEach((r) => (r.checkExport = checked))
+}
+
+/** DEFAULT：回到原本的規則（付錢人／受益人／錢必填，付款時間與備注二選一），並把所有記錄都設回要檢查 */
+async function resetExportRules() {
+  exportRules.value = { ...DEFAULT_EXPORT_RULES }
+  records.value.forEach((r) => (r.checkExport = true))
+  backupNotice.value = '匯出前檢查已回到預設：付錢人、受益人、錢必填，付款時間與備注二選一'
+}
+
 /** 通過回傳 true；有缺就跳出清單並回傳 false */
 async function exportAllowed() {
   if (!checkBeforeExport.value) return true
-  const bad = findIncomplete(records.value, (r) => seqLabels.value.get(r.id) ?? r.fileName)
+  const bad = findIncomplete(records.value, (r) => seqLabels.value.get(r.id) ?? r.fileName, exportRules.value)
   if (!bad.length) return true
   await warn(
     `有 ${bad.length} 筆還沒填完`,
-    `下面這些記錄少了必填的欄位（付錢人、受益人、錢，以及付款時間或備注其中一個）：\n\n` +
+    `下面這些記錄少了要檢查的欄位（目前規則是「${describeRules(exportRules.value)}」）：\n\n` +
       `${incompleteMessage(bad)}\n\n` +
-      '補齊之後再匯出就不會看到這個訊息；如果不想每次檢查，可以到「設定」把「匯出前先檢查」關掉。',
+      '補齊之後再匯出就不會看到這個訊息；也可以到「設定」調整要檢查哪些欄位、或把某幾筆設成不用檢查。',
   )
   return false
 }
@@ -2132,6 +2157,8 @@ function serializeRecord(r) {
     paidAtManual: r.paidAtManual,
     locked: !!r.locked,
     amountChooserOff: !!r.amountChooserOff,
+    /* 匯出前檢查：這筆要不要檢查（預設要） */
+    checkExport: r.checkExport !== false,
     /* 附加圖片只存「是哪一張」的資料，bytes 由 persist() 補上 */
     extraImages: (r.extraImages ?? []).map((img) => ({
       id: img.id,
@@ -2215,6 +2242,8 @@ async function persist() {
     await put('settings', { id: 'shareLinkText', value: linkInput.value })
     /* 匯出前要不要先檢查必填欄位 */
     await put('settings', { id: 'checkBeforeExport', value: checkBeforeExport.value })
+    /* 要檢查哪些欄位 */
+    await put('settings', { id: 'exportRules', value: { ...exportRules.value } })
     storageError.value = ''
   } catch (e) {
     storageError.value = `資料無法存到本機：${e?.message ?? e}`
@@ -2223,7 +2252,7 @@ async function persist() {
 
 let saveTimer
 watch(
-  [records, persons, defaultCurrency, noteCategories, linkInput, checkBeforeExport],
+  [records, persons, defaultCurrency, noteCategories, linkInput, checkBeforeExport, exportRules],
   () => {
     clearTimeout(saveTimer)
     saveTimer = setTimeout(persist, 300)
@@ -2323,6 +2352,8 @@ onMounted(async () => {
     linkInput.value = settings.find((s) => s.id === 'shareLinkText')?.value ?? ''
     /* 匯出前檢查：預設要檢查（舊資料沒有這個設定時也是要檢查） */
     checkBeforeExport.value = settings.find((s) => s.id === 'checkBeforeExport')?.value !== false
+    /* 要檢查哪些欄位：舊資料沒有就用預設規則 */
+    exportRules.value = normalizeRules(settings.find((s) => s.id === 'exportRules')?.value)
     const links = settings.find((s) => s.id === 'appliedShareLinks')?.value
     appliedLinks = Array.isArray(links) ? links : []
     /* 手動新增的編號接續舊資料（沒有編號的「手動新增」不算），號碼不重用 */
@@ -2546,14 +2577,65 @@ onUnmounted(() => {
           匯出前先檢查每筆記錄的必填欄位
         </label>
         <p class="hint">
-          勾選時，按「匯出」（JSON 備份）或設定頁的「下載 .txt」會先檢查：
-          <strong>付錢人、受益人、錢</strong>必填，<strong>付款時間與備注則二選一</strong>；
-          圖片不算必填（手動新增的記錄可以沒有圖片）。有缺會列出是哪幾筆、缺什麼，並停下不匯出。
-        </p>
-        <p class="hint">
-          不想每次檢查就取消勾選（這個設定會存在這台裝置，重新整理不會不見）。
+          勾選時，按「匯出」（JSON 備份）或上面的「下載 .txt」會先檢查每筆記錄；有缺會列出是哪幾筆、
+          缺什麼，並停下不匯出。<strong>圖片不算必填</strong>（手動新增的記錄可以沒有圖片）。
           「複製文字」不受這個設定影響。
         </p>
+
+        <!-- 檢查哪些欄位：每一項都可以自己改 -->
+        <details class="fold">
+          <summary>
+            <span class="fold-title">檢查哪些欄位</span>
+            <span class="count">{{ exportRuleSummary }}</span>
+          </summary>
+          <div class="fold-body">
+            <p class="hint">
+              每一項都可以設成「不檢查」；付款時間與備注可以選「二選一」（其中一個有就好）、
+              兩個都要，或只要其中一個。預設是：付錢人、受益人、錢必填，付款時間與備注二選一。
+            </p>
+            <div v-for="field in RULE_FIELDS" :key="field.key" class="rule-row">
+              <span class="rule-name">{{ field.name }}</span>
+              <select v-model="exportRules[field.key]" class="input">
+                <option v-for="opt in field.options" :key="opt.value" :value="opt.value">
+                  {{ opt.label }}
+                </option>
+              </select>
+            </div>
+            <button type="button" class="btn" @click="resetExportRules">DEFAULT（回復預設）</button>
+          </div>
+        </details>
+
+        <!-- 要檢查哪幾筆：新上傳的記錄預設都要檢查 -->
+        <details class="fold">
+          <summary>
+            <span class="fold-title">要檢查哪幾筆記錄</span>
+            <span class="count">{{ exportCheckedCount }} / {{ records.length }}</span>
+          </summary>
+          <div class="fold-body">
+            <p class="hint">
+              取消勾選的記錄，匯出時就不會檢查它（例如某一筆本來就沒有備注）。
+              新上傳的記錄預設都會檢查。
+            </p>
+            <div v-if="records.length" class="rule-actions">
+              <button type="button" class="btn btn-icon" @click="setAllExportCheck(true)">全部都要檢查</button>
+              <button type="button" class="btn btn-icon" @click="setAllExportCheck(false)">全部都不用檢查</button>
+            </div>
+            <ul v-if="records.length" class="check-list">
+              <li v-for="r in records" :key="r.id" class="check-item">
+                <label class="checkbox">
+                  <input
+                    type="checkbox"
+                    :checked="r.checkExport !== false"
+                    @change="setExportCheck(r, $event.target.checked)"
+                  />
+                  <span class="check-seq">{{ seqLabels.get(r.id) ?? '' }}</span>
+                  <span class="check-file" :title="r.fileName">{{ r.fileName }}</span>
+                </label>
+              </li>
+            </ul>
+            <p v-else class="hint">還沒有任何記錄。</p>
+          </div>
+        </details>
       </section>
 
       <section class="card">
@@ -3299,6 +3381,76 @@ onUnmounted(() => {
 
 .fold-body {
   margin-top: 12px;
+}
+
+/* 匯出前檢查：每一個欄位一列（名稱＋下拉選單） */
+.rule-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.rule-name {
+  flex: 0 0 auto;
+  width: 112px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.rule-row .input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.rule-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+/* 要檢查哪幾筆：一列一筆（序號＋檔名） */
+.check-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 300px;
+  overflow: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.check-item {
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.check-item .checkbox {
+  width: 100%;
+  min-width: 0;
+}
+
+.check-seq {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.check-file {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.fold + .fold {
+  margin-top: 10px;
 }
 
 .cat-add {
