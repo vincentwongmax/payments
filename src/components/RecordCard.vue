@@ -231,6 +231,14 @@ function chooseAmount(a) {
   r.value.currencyLocked = true
 }
 
+/*
+ * 關掉「這張圖有多個金額，用哪一個？」：跟鎖定過一次一樣，這筆之後不會再問
+ * （amountChooserOff 會跟著記錄存到本機）。金額就維持目前欄位裡的值。
+ */
+function dismissAmountChooser() {
+  r.value.amountChooserOff = true
+}
+
 function toggleBeneficiary(id) {
   const list = r.value.beneficiaryIds
   const at = list.indexOf(id)
@@ -520,6 +528,27 @@ function toggleBeneficiary(id) {
       <div v-if="showAmountChooser" class="field">
         <span class="lbl">這張圖有多個金額，用哪一個？</span>
         <div class="chips">
+          <!-- 關閉：最左邊的小圖示，按了就不再問這筆（金額維持現在的值） -->
+          <button
+            type="button"
+            class="chip-x"
+            title="關閉這個選擇（這筆之後不會再問）"
+            aria-label="關閉金額選擇"
+            @click="dismissAmountChooser"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              width="13"
+              height="13"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.6"
+              stroke-linecap="round"
+              aria-hidden="true"
+            >
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
           <button
             v-for="a in r.amounts"
             :key="`${a.currency}:${a.value}`"
@@ -576,12 +605,13 @@ function toggleBeneficiary(id) {
 }
 
 /*
- * 被點到的記錄：外框亮起來（兩層：綠色實線 ＋ 淡淡的光暈），
+ * 被點到的記錄：外框亮起來（兩層：實線 ＋ 淡淡的光暈），
  * 點畫面空白處或別筆記錄才會換人。放在 :hover 後面才蓋得過 hover。
+ * 顏色可以用「設定 → 顏色 → 選取顏色」自己換（--pick，預設＝原本的綠色）。
  */
 .rec.on {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow);
+  border-color: var(--pick);
+  box-shadow: 0 0 0 3px var(--pick-soft), var(--shadow);
 }
 
 /*
@@ -967,6 +997,29 @@ function toggleBeneficiary(id) {
   font-size: 13px;
   font-variant-numeric: tabular-nums;
   cursor: pointer;
+}
+
+/* 「多個金額」那一排最左邊的關閉鈕：不用搶眼的小圓形圖示 */
+.chip-x {
+  flex: none;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  transition: border-color 0.14s, color 0.14s;
+}
+
+.chip-x:hover {
+  border-color: var(--danger);
+  color: var(--danger);
 }
 
 .chip.on {

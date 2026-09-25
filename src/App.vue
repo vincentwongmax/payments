@@ -279,6 +279,23 @@ async function generateShareLink() {
     `已生成連結（${parts.join('、')}）${copied ? '並複製到剪貼簿' : '，請從下面的框複製'}。`
 }
 
+/**
+ * 複製分享連結：把框裡的內容複製到剪貼簿（框裡沒東西就提示先「生成」或貼上）。
+ */
+async function copyShareLink() {
+  const text = linkInput.value.trim()
+  if (!text) {
+    warn('框裡還沒有連結', '先按「生成」做一個，或貼上別人給你的分享連結，再按「複製」。')
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(text)
+    backupNotice.value = '已複製分享連結到剪貼簿。'
+  } catch {
+    backupNotice.value = '這個瀏覽器不能自動複製（Web Share／剪貼簿要 https 或 localhost），請長按上面的框自己複製。'
+  }
+}
+
 /* ---------- 還沒有「自己」就先問 ---------- */
 const selfDialogEl = ref(null)
 const selfChoice = ref('')
@@ -758,6 +775,90 @@ function togglePlainMode() {
   backupNotice.value = plainMode.value
     ? '已切換成普通文字模式，按「返回」就會看到（點欄位可以直接改）'
     : '已切換回正常模式，按「返回」就會看到'
+}
+
+/* ---------- 顏色：鎖定框線與選取外框可以自己選 ---------- */
+const COLOR_PRESETS = [
+  { hex: '#e07297', name: '玫瑰粉' },
+  { hex: '#2f6f4e', name: '森林綠' },
+  { hex: '#2f6fb0', name: '海藍' },
+  { hex: '#7a52c7', name: '紫' },
+  { hex: '#c8860a', name: '琥珀' },
+  { hex: '#a5342c', name: '磚紅' },
+  { hex: '#4a4f46', name: '墨灰' },
+]
+const DEFAULT_LOCK_COLOR = '#e07297'
+const DEFAULT_PICK_COLOR = '#2f6f4e'
+
+const lockColor = ref(DEFAULT_LOCK_COLOR)
+const pickColor = ref(DEFAULT_PICK_COLOR)
+/* 輸入框裡的字（按 Enter 或離開欄位才套用，打錯就還原） */
+const lockDraft = ref(DEFAULT_LOCK_COLOR)
+const pickDraft = ref(DEFAULT_PICK_COLOR)
+const badColor = ref('')
+
+/** `#rgb`／`#rrggbb`（# 可以省略）才收，其他一律當成沒填 */
+function normalizeHex(value) {
+  const text = String(value ?? '').trim()
+  if (!/^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.test(text)) return ''
+  const hex = text.replace('#', '').toLowerCase()
+  return `#${hex.length === 3 ? [...hex].map((c) => c + c).join('') : hex}`
+}
+
+/** 把顏色往白色（淡）或黑色（深）混，用來做 soft／dark 兩個附屬色 */
+function mixHex(hex, target, ratio) {
+  const from = parseInt(hex.slice(1), 16)
+  const to = parseInt(target.slice(1), 16)
+  const part = (shift) => {
+    const a = (from >> shift) & 255
+    const b = (to >> shift) & 255
+    return Math.round(a * (1 - ratio) + b * ratio)
+      .toString(16)
+      .padStart(2, '0')
+  }
+  return `#${part(16)}${part(8)}${part(0)}`
+}
+
+/*
+ * 直接改 :root 上的 CSS 變數，卡片（RecordCard.vue）、表格與對話框都吃得到。
+ * 選回預設色時把變數移除，讓 style.css 原本的值生效（外觀跟以前完全一樣）。
+ */
+function applyColors() {
+  const root = document.documentElement
+  const set = (name, value) => (value ? root.style.setProperty(name, value) : root.style.removeProperty(name))
+  const lock = lockColor.value
+  const lockIsDefault = lock === DEFAULT_LOCK_COLOR
+  set('--lock', lockIsDefault ? '' : lock)
+  set('--lock-dark', lockIsDefault ? '' : mixHex(lock, '#000000', 0.22))
+  set('--lock-soft', lockIsDefault ? '' : mixHex(lock, '#ffffff', 0.88))
+  const pick = pickColor.value
+  const pickIsDefault = pick === DEFAULT_PICK_COLOR
+  set('--pick', pickIsDefault ? '' : pick)
+  set('--pick-soft', pickIsDefault ? '' : mixHex(pick, '#ffffff', 0.88))
+}
+
+watch(
+  [lockColor, pickColor],
+  () => {
+    lockDraft.value = lockColor.value
+    pickDraft.value = pickColor.value
+    applyColors()
+  },
+  { immediate: true },
+)
+
+/** 輸入框套用：合法就直接用，不合法就提示並還原成目前用的顏色 */
+function applyColorDraft(which) {
+  const draft = which === 'lock' ? lockDraft : pickDraft
+  const color = which === 'lock' ? lockColor : pickColor
+  const hex = normalizeHex(draft.value)
+  if (!hex) {
+    badColor.value = which
+    draft.value = color.value
+    return
+  }
+  badColor.value = ''
+  color.value = hex
 }
 
 /**
@@ -2397,6 +2498,9 @@ async function persist() {
      * DataCloneError），所以要轉成純物件再寫進去。
      */
     await put('settings', { id: 'exportRules', value: plainCopy(exportRules.value) })
+    /* 外觀：鎖定框線與選取外框的顏色 */
+    await put('settings', { id: 'lockColor', value: lockColor.value })
+    await put('settings', { id: 'pickColor', value: pickColor.value })
     storageError.value = ''
   } catch (e) {
     storageError.value = `資料無法存到本機：${e?.message ?? e}`
@@ -2405,7 +2509,17 @@ async function persist() {
 
 let saveTimer
 watch(
-  [records, persons, defaultCurrency, noteCategories, linkInput, checkBeforeExport, exportRules],
+  [
+    records,
+    persons,
+    defaultCurrency,
+    noteCategories,
+    linkInput,
+    checkBeforeExport,
+    exportRules,
+    lockColor,
+    pickColor,
+  ],
   () => {
     clearTimeout(saveTimer)
     saveTimer = setTimeout(persist, 300)
@@ -2507,6 +2621,9 @@ onMounted(async () => {
     checkBeforeExport.value = settings.find((s) => s.id === 'checkBeforeExport')?.value !== false
     /* 要檢查哪些欄位：舊資料沒有就用預設規則 */
     exportRules.value = normalizeRules(settings.find((s) => s.id === 'exportRules')?.value)
+    /* 外觀顏色：存壞了或沒存過就回到預設色 */
+    lockColor.value = normalizeHex(settings.find((s) => s.id === 'lockColor')?.value) || DEFAULT_LOCK_COLOR
+    pickColor.value = normalizeHex(settings.find((s) => s.id === 'pickColor')?.value) || DEFAULT_PICK_COLOR
     const links = settings.find((s) => s.id === 'appliedShareLinks')?.value
     appliedLinks = Array.isArray(links) ? links : []
     /* 手動新增的編號：照建立順序重排一次（刪過的話號碼會補回來） */
@@ -2552,7 +2669,7 @@ onUnmounted(() => {
       <header class="head head-settings">
         <div class="head-text">
           <h1>設定</h1>
-          <p class="hint">分類管理、更新、資料統計與版本資訊。</p>
+          <p class="hint">分類管理、顏色、更新、資料統計與版本資訊。</p>
         </div>
         <div class="head-btns">
           <!-- 手機版做成 iOS 那樣的「‹ 主頁」（這一條會固定在畫面最上面，往下捲也不會消失） -->
@@ -2669,6 +2786,16 @@ onUnmounted(() => {
           />
           <!-- 生成：把現在的人物、預設幣別與備注分類做成連結（放在「套用」左邊） -->
           <button class="btn btn-icon generate-btn" @click="generateShareLink">生成</button>
+          <!-- 複製：把框裡的連結複製到剪貼簿（也在「套用」左邊，整排不換行） -->
+          <button
+            class="btn btn-icon copy-btn"
+            :class="{ 'is-busy': !linkInput.trim() }"
+            :aria-disabled="!linkInput.trim()"
+            title="複製框裡的分享連結"
+            @click="copyShareLink"
+          >
+            複製
+          </button>
           <button
             class="btn btn-icon btn-primary"
             :class="{ 'is-busy': !linkInput.trim() }"
@@ -2706,6 +2833,94 @@ onUnmounted(() => {
           {{ plainMode ? '切換回正常模式' : '切換成普通文字模式' }}
         </button>
         <p class="hint">目前：{{ plainMode ? '普通文字模式' : '正常模式' }}</p>
+      </section>
+
+      <!-- 顏色：鎖定框線與選取外框（7 個內建色 ＋ 自己輸入 HTML 色碼） -->
+      <section class="card">
+        <div class="card-head card-head-inline">
+          <h2>顏色</h2>
+        </div>
+        <p class="hint">
+          「鎖定框線」是鎖定那一筆記錄時的外框與標記；「選取顏色」是你點某一筆時亮起來的外框
+          （正常模式的卡片與普通文字模式的整列都是）。除了下面七個內建色，也可以直接輸入自己的
+          HTML 色碼，例如 <code>#e07297</code>。
+        </p>
+
+        <div class="color-row">
+          <span class="lbl">鎖定框線顏色</span>
+          <div class="swatches">
+            <button
+              v-for="c in COLOR_PRESETS"
+              :key="`lock-${c.hex}`"
+              type="button"
+              class="swatch"
+              :class="{ on: lockColor === c.hex }"
+              :style="{ background: c.hex }"
+              :title="c.name"
+              :aria-label="`鎖定框線用${c.name}`"
+              :aria-pressed="lockColor === c.hex ? 'true' : 'false'"
+              @click="lockColor = c.hex"
+            />
+          </div>
+          <div class="color-code-row">
+            <input
+              v-model="lockDraft"
+              class="input color-code"
+              type="text"
+              maxlength="7"
+              spellcheck="false"
+              autocapitalize="off"
+              autocorrect="off"
+              placeholder="#e07297"
+              aria-label="鎖定框線的 HTML 色碼"
+              @change="applyColorDraft('lock')"
+              @keyup.enter="applyColorDraft('lock')"
+            />
+            <button type="button" class="btn btn-icon" @click="lockColor = DEFAULT_LOCK_COLOR">預設色</button>
+          </div>
+          <p v-if="badColor === 'lock'" class="hint color-bad">
+            色碼要像 <code>#e07297</code>（3 或 6 位十六進位），已還原成目前用的顏色。
+          </p>
+        </div>
+
+        <div class="color-row">
+          <span class="lbl">選取顏色</span>
+          <div class="swatches">
+            <button
+              v-for="c in COLOR_PRESETS"
+              :key="`pick-${c.hex}`"
+              type="button"
+              class="swatch"
+              :class="{ on: pickColor === c.hex }"
+              :style="{ background: c.hex }"
+              :title="c.name"
+              :aria-label="`選取外框用${c.name}`"
+              :aria-pressed="pickColor === c.hex ? 'true' : 'false'"
+              @click="pickColor = c.hex"
+            />
+          </div>
+          <div class="color-code-row">
+            <input
+              v-model="pickDraft"
+              class="input color-code"
+              type="text"
+              maxlength="7"
+              spellcheck="false"
+              autocapitalize="off"
+              autocorrect="off"
+              placeholder="#2f6f4e"
+              aria-label="選取外框的 HTML 色碼"
+              @change="applyColorDraft('pick')"
+              @keyup.enter="applyColorDraft('pick')"
+            />
+            <button type="button" class="btn btn-icon" @click="pickColor = DEFAULT_PICK_COLOR">預設色</button>
+          </div>
+          <p v-if="badColor === 'pick'" class="hint color-bad">
+            色碼要像 <code>#2f6f4e</code>（3 或 6 位十六進位），已還原成目前用的顏色。
+          </p>
+        </div>
+
+        <p class="hint">顏色存在本機，重新整理或重開 App 都還在；「重置」不會清掉這個設定。</p>
       </section>
 
       <section class="card">
@@ -3913,24 +4128,25 @@ onUnmounted(() => {
 }
 
 /*
- * 被點到的那一列：整列的外框亮起來（跟正常模式的卡片一樣的綠色）。
+ * 被點到的那一列：整列的外框亮起來（跟正常模式的卡片一樣）。
  * 用 inset 的 box-shadow 畫框，表格列（tr）在 Safari 上不吃 outline。
+ * 顏色跟著「設定 → 顏色 → 選取顏色」（--pick，預設＝原本的綠色）。
  */
 .plain-row.on td {
-  background: var(--accent-soft);
-  box-shadow: inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent);
+  background: var(--pick-soft);
+  box-shadow: inset 0 2px 0 var(--pick), inset 0 -2px 0 var(--pick);
 }
 
 .plain-row.on td:first-child {
-  box-shadow: inset 2px 0 0 var(--accent), inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent);
+  box-shadow: inset 2px 0 0 var(--pick), inset 0 2px 0 var(--pick), inset 0 -2px 0 var(--pick);
 }
 
 .plain-row.on td:last-child {
-  box-shadow: inset -2px 0 0 var(--accent), inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent);
+  box-shadow: inset -2px 0 0 var(--pick), inset 0 2px 0 var(--pick), inset 0 -2px 0 var(--pick);
 }
 
 .plain-row.on .plain-seq {
-  color: var(--accent);
+  color: var(--pick);
   font-weight: 600;
 }
 
@@ -4009,9 +4225,10 @@ onUnmounted(() => {
   text-align: right;
 }
 
-/* 分享連結：輸入框 + 生成 + 套用（手機上也要擠得進一行） */
+/* 分享連結：輸入框 + 生成 + 複製 + 套用（手機上也要擠得進同一行，不換行） */
 .apply-link-row {
   display: flex;
+  flex-wrap: nowrap;
   gap: 6px;
 }
 
@@ -4023,6 +4240,69 @@ onUnmounted(() => {
 .apply-link-row .btn {
   flex: 0 0 auto;
   padding: 0 10px;
+}
+
+/* 三個按鈕都在同一行：手機上把左右內距縮小一點，輸入框才不會被擠到換行 */
+@media (max-width: 560px) {
+  .apply-link-row {
+    gap: 5px;
+  }
+
+  .apply-link-row .btn {
+    padding: 0 8px;
+  }
+}
+
+/* ---------- 設定 → 顏色 ---------- */
+.color-row {
+  margin-top: 14px;
+}
+
+.color-row .lbl {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.swatch {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: box-shadow 0.14s, transform 0.14s;
+}
+
+.swatch:hover {
+  transform: scale(1.06);
+}
+
+/* 選到的那一個：外面再套一圈深色（用兩層 box-shadow 畫，不會影響版面） */
+.swatch.on {
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--text);
+}
+
+.color-code-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.color-code {
+  flex: 0 0 auto;
+  width: 118px;
+  font-variant-numeric: tabular-nums;
+}
+
+.color-bad {
+  color: var(--danger);
 }
 
 .apply-link-row code,
