@@ -328,8 +328,29 @@ function toggleBeneficiary(id) {
         >
           跳過
         </button>
-        <button v-if="r.url" class="btn btn-icon" @click="emit('view', r)">
-          圖片{{ imageTotal > 1 ? ` ${imageTotal}` : '' }}
+        <button
+          v-if="r.url"
+          class="btn btn-icon"
+          :title="imageTotal > 1 ? `這筆有 ${imageTotal} 張圖片` : '看圖片'"
+          @click="emit('view', r)"
+        >
+          圖片
+          <!-- 多張圖片：加一個「多張」圖示（滑過去看得到有幾張） -->
+          <svg
+            v-if="imageTotal > 1"
+            viewBox="0 0 24 24"
+            width="14"
+            height="14"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <rect x="9" y="3" width="12" height="12" rx="2" />
+            <path d="M15 21H5a2 2 0 0 1-2-2V9" />
+          </svg>
         </button>
         <!-- 刪除搬到「更多」裡面（鎖定／解除也在那裡） -->
         <button

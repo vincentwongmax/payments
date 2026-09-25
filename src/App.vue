@@ -2952,8 +2952,29 @@ onUnmounted(() => {
                 {{ cell || '—' }}
               </td>
               <td class="plain-img">
-                <button v-if="r.url" class="btn btn-icon" @click="openViewer(r)">
-                  圖片{{ imageCount(r) > 1 ? ` ${imageCount(r)}` : '' }}
+                <button
+                  v-if="r.url"
+                  class="btn btn-icon"
+                  :title="imageCount(r) > 1 ? `這筆有 ${imageCount(r)} 張圖片` : '看圖片'"
+                  @click="openViewer(r)"
+                >
+                  圖片
+                  <!-- 多張圖片：加一個「多張」圖示 -->
+                  <svg
+                    v-if="imageCount(r) > 1"
+                    viewBox="0 0 24 24"
+                    width="14"
+                    height="14"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <rect x="9" y="3" width="12" height="12" rx="2" />
+                    <path d="M15 21H5a2 2 0 0 1-2-2V9" />
+                  </svg>
                 </button>
               </td>
             </tr>
