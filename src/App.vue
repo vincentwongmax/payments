@@ -610,6 +610,17 @@ const openSettings = async () => {
   await Promise.all([loadStorageInfo(), loadOfflineState()])
 }
 
+/* ---------- 設定頁 ---------- */
+/*
+ * 設定頁的說明文字平常只顯示一行（超出用 … 收掉），點一下才展開看全部。
+ * 群組裡那句「這一組有 X 個欄位…」是動態資訊，不套用這個行為。
+ */
+function toggleHint(event) {
+  const hint = event.target?.closest?.('.view-settings .hint')
+  if (!hint || hint.closest('.rule-group')) return
+  hint.classList.toggle('open')
+}
+
 /** 這台裝置現在是不是已經可以用離線（Service Worker 已經接管） */
 async function loadOfflineState() {
   try {
@@ -2503,7 +2514,7 @@ onUnmounted(() => {
 <template>
   <div class="page">
     <!-- ================= 設定頁 ================= -->
-    <template v-if="view === 'settings'">
+    <div v-if="view === 'settings'" class="view-settings" @click="toggleHint">
       <header class="head head-settings">
         <div class="head-text">
           <h1>設定</h1>
@@ -2847,7 +2858,7 @@ onUnmounted(() => {
           手機上打開時如果建置時間跟電腦看到的不一樣，就按上面的「檢查更新並重新載入」。
         </p>
       </section>
-    </template>
+    </div>
 
     <!-- ================= 主畫面 ================= -->
     <template v-else>
@@ -3523,6 +3534,24 @@ onUnmounted(() => {
 }
 
 /* ---------- 設定頁：可收合區塊、分類管理與資料統計 ---------- */
+/* 設定頁：說明文字平常只有一行，點一下才展開（見 toggleHint） */
+.view-settings .hint {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.view-settings .hint.open {
+  white-space: normal;
+  overflow: visible;
+}
+
+/* 收合的小標籤（幾筆／幾個）不是說明文字，不要被截成一行 */
+.view-settings .fold summary .count {
+  flex: 0 0 auto;
+}
+
 .fold summary {
   display: flex;
   align-items: center;
