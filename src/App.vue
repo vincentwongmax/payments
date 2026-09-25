@@ -3560,11 +3560,12 @@ onUnmounted(() => {
   margin-top: 12px;
 }
 
-/* 匯出前檢查：每一個欄位一列（名稱＋下拉選單） */
+/* 匯出前檢查：欄位與群組裡的選項都一行一個（從上到下、不要並排） */
 .rule-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   margin-bottom: 8px;
 }
 
@@ -3576,15 +3577,15 @@ onUnmounted(() => {
 }
 
 .rule-row .input {
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   min-width: 0;
 }
 
-/* 檢查哪些欄位：勾選框排成幾欄 */
+/* 檢查哪些欄位：一行一個勾選框 */
 .field-picks {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px 18px;
+  flex-direction: column;
+  gap: 8px;
   margin-bottom: 12px;
 }
 
@@ -3625,8 +3626,8 @@ onUnmounted(() => {
 
 .rule-group-fields {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px 16px;
+  flex-direction: column;
+  gap: 8px;
   margin-bottom: 10px;
 }
 
@@ -3641,9 +3642,9 @@ onUnmounted(() => {
   margin-bottom: 0;
 }
 
+/* 「這一組有 X 個欄位…」這一句自己一行（手機上不會擠在數字旁邊） */
 .rule-group .rule-row .hint {
-  flex: 1 1 auto;
-  min-width: 0;
+  flex: 1 0 100%;
 }
 
 .rule-actions {
