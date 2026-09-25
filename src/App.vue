@@ -27,7 +27,15 @@ import {
   seedNoteCategories,
 } from './lib/notes.js'
 import { recordCells, recordsToText } from './lib/textExport.js'
-import { findIncomplete, incompleteMessage, normalizeRules, describeRules, RULE_FIELDS, DEFAULT_EXPORT_RULES } from './lib/validate.js'
+import {
+  DEFAULT_EXPORT_RULES,
+  describeRules,
+  EXPORT_FIELDS,
+  fieldName,
+  findIncomplete,
+  incompleteMessage,
+  normalizeRules,
+} from './lib/validate.js'
 import { missingPersonIds, personNameSnapshot, recordsUsingPerson, restoreMissingPersons } from './lib/persons.js'
 import { buildShareQuery, fmtDateTime, labelBySource, parseShareParams, safeFileNamePart, searchFromText, shareLinkKey, toAmountText, uid } from './lib/util.js'
 
@@ -814,10 +822,58 @@ async function editPlainCell(record, key) {
 const checkBeforeExport = ref(true)
 
 /* 要檢查哪些欄位（使用者可以在設定頁改） */
-const exportRules = ref({ ...DEFAULT_EXPORT_RULES })
+const exportRules = ref(normalizeRules(null))
 
 /** 目前規則的一句話說明 */
 const exportRuleSummary = computed(() => describeRules(exportRules.value))
+
+/** 有勾選的欄位（N選M 群組只挑得到這些） */
+const exportCheckedFields = computed(() =>
+  EXPORT_FIELDS.filter((f) => exportRules.value.checked.includes(f.key)),
+)
+
+/** 這個欄位被哪些群組用到（被用到就由群組決定要填幾個，不再個別要求） */
+const groupsUsingField = (key) =>
+  exportRules.value.groups.filter((g) => g.fields.includes(key)).length
+
+const isFieldChecked = (key) => exportRules.value.checked.includes(key)
+
+/** 勾選／取消一個欄位；取消時要把它從所有 N選M 群組移除 */
+function toggleFieldChecked(key, on) {
+  if (on) {
+    if (!exportRules.value.checked.includes(key)) exportRules.value.checked.push(key)
+    return
+  }
+  exportRules.value.checked = exportRules.value.checked.filter((k) => k !== key)
+  exportRules.value.groups = exportRules.value.groups
+    .map((g) => ({ ...g, fields: g.fields.filter((f) => f !== key) }))
+    .filter((g) => g.fields.length > 0)
+}
+
+/** 增加一個 N選M 群組（可以加很多個） */
+function addRuleGroup() {
+  exportRules.value.groups.push({ id: uid(), fields: [], min: 1 })
+}
+
+function removeRuleGroup(group) {
+  exportRules.value.groups = exportRules.value.groups.filter((g) => g.id !== group.id)
+}
+
+function toggleGroupField(group, key, on) {
+  const target = exportRules.value.groups.find((g) => g.id === group.id)
+  if (!target) return
+  if (on && !target.fields.includes(key)) target.fields.push(key)
+  if (!on) target.fields = target.fields.filter((k) => k !== key)
+  /* 欄位變少時，最少要填的數量不能超過欄位數 */
+  target.min = Math.min(Math.max(1, target.min), Math.max(1, target.fields.length))
+}
+
+function setGroupMin(group, value) {
+  const target = exportRules.value.groups.find((g) => g.id === group.id)
+  if (!target) return
+  const max = Math.max(1, target.fields.length)
+  target.min = Math.min(Math.max(1, Number(value) || 1), max)
+}
 
 /** 有幾筆會被檢查（沒被設成「不用檢查」的） */
 const exportCheckedCount = computed(() => records.value.filter((r) => r.checkExport !== false).length)
@@ -833,7 +889,7 @@ const setAllExportCheck = (checked) => {
 
 /** DEFAULT：回到原本的規則（付錢人／受益人／錢必填，付款時間與備注二選一），並把所有記錄都設回要檢查 */
 async function resetExportRules() {
-  exportRules.value = { ...DEFAULT_EXPORT_RULES }
+  exportRules.value = normalizeRules(null)
   records.value.forEach((r) => (r.checkExport = true))
   backupNotice.value = '匯出前檢查已回到預設：付錢人、受益人、錢必填，付款時間與備注二選一'
 }
@@ -2217,6 +2273,9 @@ const brokenImageNames = ref([])
 /* 存圖片 bytes 而不是 Blob，見 image.js 的說明 */
 const IMAGE_STORE_VERSION = 2
 
+/** 把 Vue 的 Proxy 轉成純資料，才存得進 IndexedDB（Proxy 不能結構化複製） */
+const plainCopy = (value) => JSON.parse(JSON.stringify(value ?? null))
+
 async function persist() {
   try {
     const alive = new Set()
@@ -2275,8 +2334,11 @@ async function persist() {
     await put('settings', { id: 'shareLinkText', value: linkInput.value })
     /* 匯出前要不要先檢查必填欄位 */
     await put('settings', { id: 'checkBeforeExport', value: checkBeforeExport.value })
-    /* 要檢查哪些欄位 */
-    await put('settings', { id: 'exportRules', value: { ...exportRules.value } })
+    /*
+     * 要檢查哪些欄位。Vue 的 ref 內容是 Proxy，IndexedDB 不能直接存（會丟
+     * DataCloneError），所以要轉成純物件再寫進去。
+     */
+    await put('settings', { id: 'exportRules', value: plainCopy(exportRules.value) })
     storageError.value = ''
   } catch (e) {
     storageError.value = `資料無法存到本機：${e?.message ?? e}`
@@ -2623,7 +2685,7 @@ onUnmounted(() => {
           「複製文字」不受這個設定影響。
         </p>
 
-        <!-- 檢查哪些欄位：每一項都可以自己改 -->
+        <!-- 檢查哪些欄位：勾選框 ＋ N選M 群組 -->
         <details class="fold">
           <summary>
             <span class="fold-title">檢查哪些欄位</span>
@@ -2631,18 +2693,64 @@ onUnmounted(() => {
           </summary>
           <div class="fold-body">
             <p class="hint">
-              每一項都可以設成「不檢查」；付款時間與備注可以選「二選一」（其中一個有就好）、
-              兩個都要，或只要其中一個。預設是：付錢人、受益人、錢必填，付款時間與備注二選一。
+              勾選＝這個欄位一定要填。下面的 <strong>N選M 群組</strong>則是「這幾個欄位裡至少要有 N 個」，
+              例如付款時間與備注「二選一」。同一個欄位可以放進多個群組，但<strong>要先在上面勾選</strong>
+              才能選進群組；被群組用到的欄位就由群組決定要填幾個。
             </p>
-            <div v-for="field in RULE_FIELDS" :key="field.key" class="rule-row">
-              <span class="rule-name">{{ field.name }}</span>
-              <select v-model="exportRules[field.key]" class="input">
-                <option v-for="opt in field.options" :key="opt.value" :value="opt.value">
-                  {{ opt.label }}
-                </option>
-              </select>
+
+            <div class="field-picks">
+              <label v-for="f in EXPORT_FIELDS" :key="f.key" class="checkbox">
+                <input
+                  type="checkbox"
+                  :checked="isFieldChecked(f.key)"
+                  @change="toggleFieldChecked(f.key, $event.target.checked)"
+                />
+                {{ f.name }}
+                <span v-if="groupsUsingField(f.key)" class="tag-in-group">在 N選M 裡</span>
+              </label>
             </div>
-            <button type="button" class="btn" @click="resetExportRules">DEFAULT（回復預設）</button>
+
+            <div v-for="(g, i) in exportRules.groups" :key="g.id" class="rule-group">
+              <div class="rule-group-head">
+                <span class="rule-group-title">N選M 群組 {{ i + 1 }}</span>
+                <span class="spacer" />
+                <button type="button" class="btn btn-icon btn-danger" @click="removeRuleGroup(g)">
+                  刪除群組
+                </button>
+              </div>
+              <p v-if="!exportCheckedFields.length" class="hint">先在上面勾選欄位，這裡才挑得到。</p>
+              <div v-else class="rule-group-fields">
+                <label v-for="f in exportCheckedFields" :key="f.key" class="checkbox">
+                  <input
+                    type="checkbox"
+                    :checked="g.fields.includes(f.key)"
+                    @change="toggleGroupField(g, f.key, $event.target.checked)"
+                  />
+                  {{ f.name }}
+                </label>
+              </div>
+              <div class="rule-row">
+                <span class="rule-name">至少要填</span>
+                <input
+                  class="input rule-min"
+                  type="number"
+                  min="1"
+                  :max="Math.max(1, g.fields.length)"
+                  :value="g.min"
+                  @input="setGroupMin(g, $event.target.value)"
+                />
+                <span class="hint">
+                  個（這一組有 {{ g.fields.length }} 個欄位{{
+                    g.fields.length ? `：${g.fields.map(fieldName).join('、')}` : ''
+                  }}）
+                </span>
+              </div>
+            </div>
+
+            <div class="rule-actions">
+              <button type="button" class="btn" @click="addRuleGroup">＋ 增加 N選M 群組</button>
+              <button type="button" class="btn" @click="resetExportRules">DEFAULT（回復預設）</button>
+            </div>
           </div>
         </details>
 
@@ -3455,12 +3563,78 @@ onUnmounted(() => {
 
 .rule-name {
   flex: 0 0 auto;
-  width: 112px;
+  width: 72px;
   color: var(--muted);
   font-size: 13px;
 }
 
 .rule-row .input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 檢查哪些欄位：勾選框排成幾欄 */
+.field-picks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-bottom: 12px;
+}
+
+.field-picks .checkbox {
+  font-size: 14px;
+}
+
+/* 在 N選M 群組裡的欄位加一個小標記 */
+.tag-in-group {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* 一個 N選M 群組 */
+.rule-group {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.rule-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.rule-group-title {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.rule-group-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-bottom: 10px;
+}
+
+/* 「至少要填 N 個」的數字框窄一點 */
+.rule-min {
+  flex: 0 0 auto;
+  width: 84px;
+  min-width: 0;
+}
+
+.rule-group .rule-row {
+  margin-bottom: 0;
+}
+
+.rule-group .rule-row .hint {
   flex: 1 1 auto;
   min-width: 0;
 }

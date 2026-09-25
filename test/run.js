@@ -50,6 +50,7 @@ import {
   DEFAULT_EXPORT_RULES,
   describeRules,
   findIncomplete,
+  groupLabel,
   incompleteMessage,
   missingFields,
   normalizeRules,
@@ -957,29 +958,70 @@ assert.match(incompleteMessage(bad), /本機-d：缺 錢、付款時間或備注
 assert.match(incompleteMessage(bad, 1), /還有 2 筆/)
 assert.equal(findIncomplete(exportList.filter((r) => r.id === 'a')).length, 0)
 
-/* ---------- 匯出檢查：規則可以自己改 ---------- */
+/* ---------- 匯出檢查：規則可以自己改（勾選框 ＋ N選M 群組） ---------- */
 assert.deepEqual(normalizeRules(null), DEFAULT_EXPORT_RULES, '沒有設定就用預設規則')
-assert.deepEqual(normalizeRules({ payer: 'off' }), { ...DEFAULT_EXPORT_RULES, payer: 'off' })
-assert.deepEqual(normalizeRules({ payer: '亂寫', timeNote: 'both' }), { ...DEFAULT_EXPORT_RULES, timeNote: 'both' }, '不認識的值要忽略')
-assert.equal(describeRules(DEFAULT_EXPORT_RULES), '付錢人・受益人・錢・時間或備注')
-assert.equal(describeRules({ ...DEFAULT_EXPORT_RULES, timeNote: 'both' }), '付錢人・受益人・錢・時間＋備注')
-assert.equal(describeRules({ payer: 'off', beneficiary: 'off', amount: 'off', timeNote: 'off' }), '不檢查')
+assert.deepEqual(normalizeRules({ checked: ['payer'], groups: [] }), { checked: ['payer'], groups: [] })
+const messyRules = normalizeRules({ checked: ['payer', '亂寫'], groups: [{ fields: ['payer', '沒有的欄位'], min: 5 }] })
+assert.deepEqual(messyRules.checked, ['payer'], '不認識的欄位要忽略')
+assert.deepEqual(messyRules.groups.map((g) => ({ fields: g.fields, min: g.min })), [{ fields: ['payer'], min: 1 }], 'min 不能超過欄位數')
+assert.equal(describeRules(DEFAULT_EXPORT_RULES), '付錢人・受益人・錢・付款時間或備注')
+assert.equal(
+  describeRules({ checked: ['payer', 'paidAt', 'note'], groups: [{ id: 'g', fields: ['paidAt', 'note'], min: 2 }] }),
+  '付錢人・付款時間、備注 至少 2 個',
+)
+assert.equal(describeRules({ checked: [], groups: [] }), '不檢查')
+
+/* 舊版設定（下拉選單那個版本）要能轉過來 */
+const migrated = normalizeRules({ payer: 'require', beneficiary: 'require', amount: 'require', timeNote: 'one' })
+assert.deepEqual(migrated.checked, ['payer', 'beneficiary', 'amount', 'paidAt', 'note'])
+assert.deepEqual(migrated.groups.map((g) => ({ fields: g.fields, min: g.min })), [{ fields: ['paidAt', 'note'], min: 1 }])
+assert.deepEqual(normalizeRules({ payer: 'require', timeNote: 'both' }), {
+  checked: ['payer', 'paidAt', 'note'],
+  groups: [],
+})
+assert.deepEqual(normalizeRules({ payer: 'off', beneficiary: 'off', amount: 'off', timeNote: 'off' }), {
+  checked: [],
+  groups: [],
+})
 
 const blank = { payerId: '', beneficiaryIds: [], amount: '', paidAtText: '', note: '' }
-/* 全部關掉 → 什麼都不缺 */
-assert.deepEqual(missingFields(blank, { payer: 'off', beneficiary: 'off', amount: 'off', timeNote: 'off' }), [])
-/* 只檢查錢 */
-assert.deepEqual(missingFields(blank, { payer: 'off', beneficiary: 'off', amount: 'require', timeNote: 'off' }), ['錢'])
-/* 兩個都要 */
-assert.deepEqual(missingFields({ ...blank, payerId: 'p1' }, { ...DEFAULT_EXPORT_RULES, timeNote: 'both' }), [
-  '受益人',
-  '錢',
-  '付款時間',
-  '備注',
-])
-/* 只要付款時間／只要備注 */
-assert.deepEqual(missingFields({ ...blank, paidAtText: '2026-09-11 23:52' }, { payer: 'off', beneficiary: 'off', amount: 'off', timeNote: 'time' }), [])
-assert.deepEqual(missingFields({ ...blank, paidAtText: '2026-09-11 23:52' }, { payer: 'off', beneficiary: 'off', amount: 'off', timeNote: 'note' }), ['備注'])
+/* 什麼都不勾 → 什麼都不缺 */
+assert.deepEqual(missingFields(blank, { checked: [], groups: [] }), [])
+/* 只勾錢 */
+assert.deepEqual(missingFields(blank, { checked: ['amount'], groups: [] }), ['錢'])
+/* 預設規則：三項必填＋時間與備注二選一 */
+assert.deepEqual(missingFields(blank), ['付錢人', '受益人', '錢', '付款時間或備注'])
+/* 有付款時間 → 二選一那組過了 */
+assert.deepEqual(missingFields({ ...blank, paidAtText: '2026-09-11 23:52' }), ['付錢人', '受益人', '錢'])
+/* 放進群組的欄位不再個別要求：付款時間與備注二選一（有備注就好） */
+assert.deepEqual(
+  missingFields({ ...blank, note: '午餐' }, { checked: ['paidAt', 'note'], groups: [{ id: 'g', fields: ['paidAt', 'note'], min: 1 }] }),
+  [],
+)
+/* 群組要求兩個都要 */
+assert.deepEqual(
+  missingFields(
+    { ...blank, note: '午餐' },
+    { checked: ['paidAt', 'note'], groups: [{ id: 'g', fields: ['paidAt', 'note'], min: 2 }] },
+  ),
+  ['付款時間、備注 至少 2 個'],
+)
+/* 同一個欄位可以同時在兩個群組：兩組都要成立 */
+assert.deepEqual(
+  missingFields(blank, {
+    checked: ['payer', 'note'],
+    groups: [
+      { id: 'g1', fields: ['payer', 'note'], min: 1 },
+      { id: 'g2', fields: ['payer', 'note'], min: 2 },
+    ],
+  }),
+  ['付錢人或備注', '付錢人、備注 至少 2 個'],
+)
+/* 沒勾選的欄位不會留在群組裡（等於不檢查） */
+assert.deepEqual(
+  missingFields(blank, { checked: [], groups: [{ id: 'g', fields: ['paidAt', 'note'], min: 1 }] }),
+  [],
+)
 
 /* 單筆「不用檢查」：findIncomplete 要跳過它 */
 const flagged = [
