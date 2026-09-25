@@ -18,6 +18,7 @@ import {
   pickDefaultAmount,
 } from '../src/lib/ocr.js'
 import {
+  buildShareQuery,
   labelBySource,
   parseShareParams,
   relativeTime,
@@ -1048,6 +1049,28 @@ assert.equal(findImageOwner(ownerList, 'h-e1').imageId, 'e1')
 assert.equal(findImageOwner(ownerList, 'h-e1').record.fileName, 'IMG_1.PNG')
 assert.equal(findImageOwner(ownerList, 'nope'), null)
 assert.equal(findImageOwner(ownerList, ''), null)
+
+/* ---------- 分享連結：生成的內容要能被自己解析回來 ---------- */
+const madeQuery = buildShareQuery({
+  persons: [{ name: 'Vincent' }, { name: 'Ben' }, { name: 'ben' }, { name: '  ' }],
+  currency: 'cny',
+  notes: [{ text: '吃_早餐' }, { text: '打車(去程)' }, { text: '吃_早餐' }],
+})
+assert.equal(
+  madeQuery,
+  'persons=Vincent%2CBen&currency=CNY&notes=%E5%90%83_%E6%97%A9%E9%A4%90%2C%E6%89%93%E8%BB%8A%28%E5%8E%BB%E7%A8%8B%29',
+)
+const madeParsed = parseShareParams(`?${madeQuery}`)
+assert.deepEqual(madeParsed.names, ['Vincent', 'Ben'], '重複的人名（忽略大小寫）只留一個')
+assert.equal(madeParsed.currency, 'CNY', '幣別會轉成大寫')
+assert.deepEqual(madeParsed.notes, ['吃_早餐', '打車(去程)'])
+/* 名稱裡有逗號會被拆開 → 生成時先把逗號換成空白 */
+const commaName = parseShareParams(`?${buildShareQuery({ persons: [{ name: 'Ben,Ken' }] })}`)
+assert.deepEqual(commaName.names, ['Ben Ken'])
+/* 什麼都沒有 → 空字串；幣別格式不對就不放進去 */
+assert.equal(buildShareQuery({}), '')
+assert.equal(buildShareQuery({ currency: 'CN' }), '')
+assert.equal(buildShareQuery({ currency: 'cny' }), 'currency=CNY')
 
 /* ---------- PWA：離線可用需要的檔案 ---------- */
 const root = new URL('..', import.meta.url)

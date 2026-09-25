@@ -29,7 +29,7 @@ import {
 import { recordCells, recordsToText } from './lib/textExport.js'
 import { findIncomplete, incompleteMessage, normalizeRules, describeRules, RULE_FIELDS, DEFAULT_EXPORT_RULES } from './lib/validate.js'
 import { missingPersonIds, personNameSnapshot, recordsUsingPerson, restoreMissingPersons } from './lib/persons.js'
-import { fmtDateTime, labelBySource, parseShareParams, safeFileNamePart, searchFromText, shareLinkKey, toAmountText, uid } from './lib/util.js'
+import { buildShareQuery, fmtDateTime, labelBySource, parseShareParams, safeFileNamePart, searchFromText, shareLinkKey, toAmountText, uid } from './lib/util.js'
 
 /* ---------- 人物 ---------- */
 const persons = ref([])
@@ -236,6 +236,39 @@ function applyLinkInput() {
   if (!result.added.length && !result.currencySet && !result.notesAdded.length) {
     backupNotice.value = `連結裡的內容都已經有了（${[...names, currency, ...notes].filter(Boolean).join('、')}）`
   }
+}
+
+/**
+ * 生成分享連結：把「現在的人物、預設幣別、備注分類」做成連結，
+ * 填進下面的框（可以自己再改或複製）並順便複製到剪貼簿。
+ */
+async function generateShareLink() {
+  const query = buildShareQuery({
+    persons: persons.value,
+    currency: defaultCurrency.value,
+    notes: noteCategories.value,
+  })
+  if (!query) {
+    warn('還沒有可以分享的內容', '先新增人物、選預設幣別或建立備注分類，再按「生成」。')
+    return
+  }
+  const url = `${location.origin}${location.pathname}?${query}`
+  linkInput.value = url
+  const { names, currency, notes } = parseShareParams(`?${query}`)
+  const parts = [
+    names.length ? `${names.length} 位人物` : '',
+    currency ? `幣別 ${currency}` : '',
+    notes.length ? `${notes.length} 個備注分類` : '',
+  ].filter(Boolean)
+  let copied = false
+  try {
+    await navigator.clipboard.writeText(url)
+    copied = true
+  } catch {
+    /* 沒有 https 或沒有權限：還是把連結留在框裡讓使用者自己複製 */
+  }
+  backupNotice.value =
+    `已生成連結（${parts.join('、')}）${copied ? '並複製到剪貼簿' : '，請從下面的框複製'}。`
 }
 
 /* ---------- 還沒有「自己」就先問 ---------- */
@@ -2527,6 +2560,14 @@ onUnmounted(() => {
             套用
           </button>
         </div>
+        <!-- 生成：把現在的人物、預設幣別與備注分類做成連結 -->
+        <div class="head-actions">
+          <button class="btn" @click="generateShareLink">生成現在的連結</button>
+        </div>
+        <p class="hint">
+          「生成現在的連結」會把<strong>現在的人物、預設幣別與所有備注分類</strong>做成上面那種連結，
+          填進框裡並複製到剪貼簿，可以傳給別人（或自己在另一台裝置開）。
+        </p>
         <p class="hint">
           貼上的內容會留在這個框裡（除非你自己改掉或清空），重置也不會消失；
           從連結帶進來的備注分類也一樣會保留。

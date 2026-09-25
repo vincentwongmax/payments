@@ -159,3 +159,51 @@ export function searchFromText(text) {
   return ''
 }
 
+/* 分隔字元用逗號：名字與分類裡如果本來就有逗號，parseShareParams 會把它拆成兩個，這裡先清掉 */
+const sharePart = (text) =>
+  String(text ?? '')
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .replace(/[,，、;；]/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .slice(0, 40)
+
+/**
+ * 依現在的資料生出分享連結的查詢字串（設定頁的「生成」按鈕用）。
+ * 人物用 name、分類用 text；重複的（忽略大小寫）只留第一個。
+ * 回傳不含 "?" 的字串，例如 persons=Vincent,Ben&currency=CNY&notes=吃_早餐
+ */
+export function buildShareQuery({ persons = [], currency = '', notes = [] } = {}) {
+  const params = new URLSearchParams()
+  const seen = new Set()
+  const names = []
+  for (const p of persons) {
+    const name = sharePart(p?.name ?? p)
+    if (!name) continue
+    const key = name.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    names.push(name)
+    if (names.length >= 30) break
+  }
+  if (names.length) params.set('persons', names.join(','))
+
+  const code = String(currency ?? '').trim().toUpperCase()
+  if (/^[A-Z]{3}$/.test(code)) params.set('currency', code)
+
+  const noteSeen = new Set()
+  const noteList = []
+  for (const c of notes) {
+    const text = sharePart(c?.text ?? c)
+    if (!text) continue
+    const key = text.toLowerCase()
+    if (noteSeen.has(key)) continue
+    noteSeen.add(key)
+    noteList.push(text)
+    if (noteList.length >= 60) break
+  }
+  if (noteList.length) params.set('notes', noteList.join(','))
+
+  return params.toString()
+}
+
