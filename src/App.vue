@@ -2052,17 +2052,27 @@ async function exportBackup() {
     const fileName = `${name}.json`
     const file = new File([JSON.stringify(payload)], fileName, { type: 'application/json' })
 
-    let shareFailed = false
-    if (useShareSheet() && navigator.canShare?.({ files: [file] })) {
-      try {
-        await navigator.share({ files: [file], title: fileName })
-        backupNotice.value = `已開啟分享面板：${fileName}`
-        return
-      } catch (e) {
-        /* 使用者按取消就不算失敗；其他錯誤則退回下載 */
-        if (e?.name === 'AbortError') return
-        shareFailed = true
+    let shareNote = ''
+    if (useShareSheet() && typeof navigator.share === 'function' && typeof navigator.canShare === 'function') {
+      if (navigator.canShare({ files: [file] })) {
+        try {
+          await navigator.share({ files: [file], title: fileName })
+          backupNotice.value = `已開啟分享面板：${fileName}`
+          return
+        } catch (e) {
+          /* 使用者按取消就不算失敗；其他錯誤則退回下載 */
+          if (e?.name === 'AbortError') return
+          shareNote = '\n（分享面板打不開，已改成直接下載）'
+        }
       }
+    } else if (useShareSheet()) {
+      /*
+       * 手機上沒有分享面板：系統分享面板（Web Share）只在安全來源提供，
+       * 用區域網的 http://192.168.x.x 開就不會有——說清楚原因，免得以為壞了。
+       */
+      shareNote = window.isSecureContext
+        ? '\n（這個瀏覽器不支援系統分享面板，已改成直接下載）'
+        : `\n（目前網址是 ${location.origin}，不是 https，瀏覽器不提供系統分享面板，已改成直接下載。用手機開 https 的網址，或加到主畫面用 App 開，就會出現分享面板）`
     }
 
     const url = URL.createObjectURL(file)
@@ -2081,7 +2091,6 @@ async function exportBackup() {
           .slice(0, 5)
           .join('、')}${unreadableImages.length > 5 ? '…' : ''}（其他資料都在）`
       : ''
-    const shareNote = shareFailed ? '\n（分享面板打不開，已改成直接下載）' : ''
     backupNotice.value = `已匯出 ${records.value.length} 筆記錄、${persons.value.length} 位人物 → ${fileName}${skipped}${shareNote}`
   } catch (e) {
     backupNotice.value = `匯出失敗：${e?.message ?? e}`
