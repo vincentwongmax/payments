@@ -241,6 +241,16 @@ select.input {
   backdrop-filter: blur(3px);
 }
 
+/*
+ * 有原生對話框（看圖／更多／人物／貼上…）打開時，背景那一頁鎖住不要捲動。
+ * showModal() 只會讓背景不能點，捲動還是會傳下去（手指在對話框外的遮罩上滑，
+ * 整頁會跟著跑），所以這裡直接把整頁的 overflow 關掉。
+ */
+html:has(dialog[open]),
+body:has(dialog[open]) {
+  overflow: hidden;
+}
+
 .dialog-head {
   padding: 18px 20px 0;
   font-size: 17px;

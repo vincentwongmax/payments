@@ -380,11 +380,27 @@ let seqCounter = 0
 const nextSeq = () => ++seqCounter
 const stamp = () => fmtDateTime(Date.now()).replace(/[-: ]/g, '')
 
-/* 手動新增的記錄標題：手動新增1、手動新增2…（號碼不重用，刪掉舊的也不會補回來） */
+/*
+ * 手動新增的記錄標題：手動新增1、手動新增2…
+ * 號碼照「建立順序」重新排：刪掉中間那一筆，後面的會往前補
+ * （1、2、3、4 刪掉 2 → 變成 1、2、3；下一個新增的是 4），見 renumberManualRecords。
+ */
 const MANUAL_PREFIX = '手動新增'
 let manualCounter = 0
 const MANUAL_NAME_RE = /^手動新增([0-9]+)$/
 const nextManualName = () => `${MANUAL_PREFIX}${++manualCounter}`
+
+/** 把「手動新增」的記錄照建立順序重新編號（刪除後補號碼、舊資料也順一次） */
+function renumberManualRecords() {
+  const manuals = records.value
+    .filter((r) => MANUAL_NAME_RE.test(r.fileName ?? ''))
+    .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
+  manuals.forEach((r, i) => {
+    const name = `${MANUAL_PREFIX}${i + 1}`
+    if (r.fileName !== name) r.fileName = name
+  })
+  manualCounter = manuals.length
+}
 
 /* 預設幣別：還沒上傳任何圖片也可以先選 */
 const STANDARD_CURRENCIES = ['CNY', 'MOP', 'HKD', 'USD', 'TWD', 'JPY', 'EUR', 'GBP', 'SGD', 'AUD']
@@ -1685,6 +1701,8 @@ async function removeRecord(record) {
   if (!ok) return
   revoke(record.url)
   records.value = records.value.filter((r) => r.id !== record.id)
+  /* 刪掉中間的「手動新增」之後，後面的號碼要往前補（順序更新） */
+  renumberManualRecords()
 }
 
 /* ---------- 更多：鎖定／解除與刪除（刪除鈕從卡片搬到這裡） ---------- */
@@ -1869,6 +1887,24 @@ function reopenViewer(record, index = 0) {
   zoom.value = 1
   viewerMsg.value = ''
   nextTick(() => viewerEl.value?.showModal())
+}
+
+/* ---------- 普通文字模式：沒有圖片的那一列按「無」補圖 ---------- */
+const plainPickEl = ref(null)
+let plainPickTarget = null
+
+function pickPlainImage(record) {
+  if (record.locked) return
+  plainPickTarget = record
+  plainPickEl.value?.click()
+}
+
+function onPlainPick(event) {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  const record = plainPickTarget
+  plainPickTarget = null
+  if (file && record) attachImage(record, file)
 }
 
 /* 在看圖頁後期補上圖片（可以一次選多張） */
@@ -2136,6 +2172,8 @@ function applyImport(incoming, decisions, sourceName) {
   if (!defaultCurrency.value && incoming.defaultCurrency) {
     defaultCurrency.value = incoming.defaultCurrency
   }
+  /* 匯入的可能也有「手動新增N」，一起重排才不會撞號 */
+  renumberManualRecords()
   runOcr()
   return { added: added.length, persons: nextPersons.length - before, skipped }
 }
@@ -2471,12 +2509,8 @@ onMounted(async () => {
     exportRules.value = normalizeRules(settings.find((s) => s.id === 'exportRules')?.value)
     const links = settings.find((s) => s.id === 'appliedShareLinks')?.value
     appliedLinks = Array.isArray(links) ? links : []
-    /* 手動新增的編號接續舊資料（沒有編號的「手動新增」不算），號碼不重用 */
-    const fromRecords = records.value.reduce((max, r) => {
-      const m = MANUAL_NAME_RE.exec(r.fileName ?? '')
-      return m ? Math.max(max, Number(m[1])) : max
-    }, 0)
-    manualCounter = Math.max(fromRecords, Number(settings.find((s) => s.id === 'manualCounter')?.value) || 0)
+    /* 手動新增的編號：照建立順序重排一次（刪過的話號碼會補回來） */
+    renumberManualRecords()
     records.value.forEach((r) => savedSigs.set(r.id, signature(serializeRecord(r))))
     /* 讀完本機資料才處理分享連結，才知道哪些人物已經有了 */
     applyShareParams()
@@ -3037,6 +3071,14 @@ onUnmounted(() => {
       <!-- 普通文字模式：只有文字與一個「圖片」按鈕，點欄位可以直接改 -->
       <div v-else-if="plainMode" class="plain-wrap">
         <p class="hint plain-tip">點欄位就可以直接修改（付錢人、受益人也可以選）。</p>
+        <!-- 沒有圖片的那一列按「無」補圖用（跟卡片上的「無圖」一樣） -->
+        <input
+          ref="plainPickEl"
+          class="sr-only"
+          type="file"
+          accept="image/*"
+          @change="onPlainPick"
+        />
         <table class="plain-table">
           <thead>
             <tr>
@@ -3101,6 +3143,16 @@ onUnmounted(() => {
                     <rect x="9" y="3" width="12" height="12" rx="2" />
                     <path d="M15 21H5a2 2 0 0 1-2-2V9" />
                   </svg>
+                </button>
+                <!-- 沒有圖片時也可以補圖（跟卡片上的「無圖」縮圖一樣） -->
+                <button
+                  v-else
+                  class="btn btn-icon"
+                  :disabled="r.locked"
+                  :title="r.locked ? '已鎖定，要補圖片請先解除' : '點一下上傳這筆的圖片'"
+                  @click="pickPlainImage(r)"
+                >
+                  無
                 </button>
               </td>
             </tr>
@@ -4241,6 +4293,17 @@ onUnmounted(() => {
   touch-action: pan-x pan-y pinch-zoom;
 }
 
+/*
+ * 有對話框（看圖／更多／人物…）打開時，背景那一頁不要跟著捲動。
+ * 這個規則要放在全域（style.css），這裡只留對話框自己的高度限制。
+ */
+.dialog {
+  max-height: calc(100vh - 24px);
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
 .viewer-body {
   display: flex;
   flex-direction: column;
@@ -4325,6 +4388,7 @@ onUnmounted(() => {
   overflow: auto;
   border-radius: var(--radius-sm);
   background: #eceee9;
+  overscroll-behavior: contain;
   /* 全頁都停用雙指縮放，只有看圖這一區例外（單指捲動要留著） */
   touch-action: pan-x pan-y pinch-zoom;
 }
@@ -4611,6 +4675,28 @@ onUnmounted(() => {
   /* 手機版：縮放按鈕改到最下面、排在「關閉」的左邊 */
   .viewer-foot {
     flex-wrap: wrap;
+  }
+
+  /* 看圖：幾乎用滿整個畫面，只留 4px 邊界（圖片區自己撐高、只有它捲動） */
+  .viewer {
+    width: calc(100vw - 8px);
+    max-width: none;
+    height: calc(100vh - 8px);
+    height: calc(100dvh - 8px);
+    max-height: none;
+    overflow: hidden;
+  }
+
+  .viewer-body {
+    height: 100%;
+    gap: 8px;
+    padding: 8px;
+  }
+
+  .viewer-stage {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
   }
 
   .viewer-foot .hint {
