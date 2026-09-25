@@ -18,6 +18,7 @@ import {
   seedNoteCategories,
 } from './lib/notes.js'
 import { recordCells, recordsToText } from './lib/textExport.js'
+import { findIncomplete, incompleteMessage } from './lib/validate.js'
 import { missingPersonIds, personNameSnapshot, recordsUsingPerson, restoreMissingPersons } from './lib/persons.js'
 import { fmtDateTime, labelBySource, parseShareParams, safeFileNamePart, searchFromText, shareLinkKey, toAmountText, uid } from './lib/util.js'
 
@@ -759,6 +760,29 @@ async function editPlainCell(record, key) {
   }
 }
 
+/* ---------- 匯出前檢查必填欄位 ---------- */
+/*
+ * 匯出（JSON 備份與設定頁的 .txt）之前先看每一筆有沒有填完：
+ * 付錢人、受益人、錢是必填，付款時間與備注則二選一。
+ * 「複製文字」不檢查（只是複製到剪貼簿，不算正式匯出）。
+ * 不想每次檢查的人可以在設定頁把「匯出前先檢查」關掉。
+ */
+const checkBeforeExport = ref(true)
+
+/** 通過回傳 true；有缺就跳出清單並回傳 false */
+async function exportAllowed() {
+  if (!checkBeforeExport.value) return true
+  const bad = findIncomplete(records.value, (r) => seqLabels.value.get(r.id) ?? r.fileName)
+  if (!bad.length) return true
+  await warn(
+    `有 ${bad.length} 筆還沒填完`,
+    `下面這些記錄少了必填的欄位（付錢人、受益人、錢，以及付款時間或備注其中一個）：\n\n` +
+      `${incompleteMessage(bad)}\n\n` +
+      '補齊之後再匯出就不會看到這個訊息；如果不想每次檢查，可以到「設定」把「匯出前先檢查」關掉。',
+  )
+  return false
+}
+
 /* ---------- 匯出文字（只文字、不含圖片） ---------- */
 const recordsText = () => recordsToText(records.value, persons.value)
 
@@ -769,11 +793,12 @@ function textFileName(ext = 'txt') {
     .concat(`.${ext}`)
 }
 
-function exportTextOnly() {
+async function exportTextOnly() {
   if (!records.value.length) {
     warn('還沒有記錄', '目前沒有任何付款記錄可以匯出。')
     return
   }
+  if (!(await exportAllowed())) return
   const fileName = textFileName()
   const file = new File([recordsText()], fileName, { type: 'text/plain;charset=utf-8' })
   const url = URL.createObjectURL(file)
@@ -1729,6 +1754,11 @@ async function encodeForExport(file) {
 
 async function exportBackup() {
   try {
+    if (!records.value.length) {
+      warn('還沒有記錄', '目前沒有任何付款記錄可以匯出。')
+      return
+    }
+    if (!(await exportAllowed())) return
     unreadableImages.length = 0
     const payload = await toBackup(
       records.value,
@@ -1998,6 +2028,8 @@ async function persist() {
     await put('settings', { id: 'noteCategories', value: noteCategories.value.map((c) => ({ ...c })) })
     /* 貼上的分享連結：使用者沒改就一直留著，重置也保留（見 resetAll） */
     await put('settings', { id: 'shareLinkText', value: linkInput.value })
+    /* 匯出前要不要先檢查必填欄位 */
+    await put('settings', { id: 'checkBeforeExport', value: checkBeforeExport.value })
     storageError.value = ''
   } catch (e) {
     storageError.value = `資料無法存到本機：${e?.message ?? e}`
@@ -2006,7 +2038,7 @@ async function persist() {
 
 let saveTimer
 watch(
-  [records, persons, defaultCurrency, noteCategories, linkInput],
+  [records, persons, defaultCurrency, noteCategories, linkInput, checkBeforeExport],
   () => {
     clearTimeout(saveTimer)
     saveTimer = setTimeout(persist, 300)
@@ -2095,6 +2127,8 @@ onMounted(async () => {
     if (Array.isArray(savedNotes)) noteCategories.value = normalizeNoteCategories(savedNotes)
     /* 上次貼上的分享連結：使用者沒改就一直在（重置也不會清掉） */
     linkInput.value = settings.find((s) => s.id === 'shareLinkText')?.value ?? ''
+    /* 匯出前檢查：預設要檢查（舊資料沒有這個設定時也是要檢查） */
+    checkBeforeExport.value = settings.find((s) => s.id === 'checkBeforeExport')?.value !== false
     const links = settings.find((s) => s.id === 'appliedShareLinks')?.value
     appliedLinks = Array.isArray(links) ? links : []
     /* 手動新增的編號接續舊資料（沒有編號的「手動新增」不算），號碼不重用 */
@@ -2289,6 +2323,26 @@ onUnmounted(() => {
           <button class="btn" @click="exportTextOnly">下載 .txt</button>
           <button class="btn btn-primary" @click="copyTextOnly">複製文字</button>
         </div>
+      </section>
+
+      <!-- 匯出前的檢查：預設要檢查，關掉之後就不會擋 -->
+      <section class="card">
+        <div class="card-head card-head-inline">
+          <h2>匯出前先檢查</h2>
+        </div>
+        <label class="checkbox">
+          <input v-model="checkBeforeExport" type="checkbox" />
+          匯出前先檢查每筆記錄的必填欄位
+        </label>
+        <p class="hint">
+          勾選時，按「匯出」（JSON 備份）或設定頁的「下載 .txt」會先檢查：
+          <strong>付錢人、受益人、錢</strong>必填，<strong>付款時間與備注則二選一</strong>；
+          圖片不算必填（手動新增的記錄可以沒有圖片）。有缺會列出是哪幾筆、缺什麼，並停下不匯出。
+        </p>
+        <p class="hint">
+          不想每次檢查就取消勾選（這個設定會存在這台裝置，重新整理不會不見）。
+          「複製文字」不受這個設定影響。
+        </p>
       </section>
 
       <section class="card">

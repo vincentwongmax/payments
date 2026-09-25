@@ -346,6 +346,8 @@ select.input {
   font-size: 14px;
   line-height: 1.6;
   color: var(--muted);
+  /* 訊息裡會有換行（例如列出哪幾筆少了什麼），保留換行才看得懂 */
+  white-space: pre-line;
 }
 
 .swal2-actions {

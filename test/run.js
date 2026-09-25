@@ -45,6 +45,7 @@ import {
 } from '../src/lib/persons.js'
 import { md5Hex } from '../src/lib/md5.js'
 import { fromBackup, mergeRecords, remapRecords, resolvePersons, toBackup } from '../src/lib/backup.js'
+import { findIncomplete, incompleteMessage, missingFields } from '../src/lib/validate.js'
 
 /* ---------- 建立一張帶 EXIF 的假 JPEG ---------- */
 function buildJpeg({ ifdDateTime, originalDateTime }) {
@@ -867,7 +868,51 @@ assert.equal(relativeTime(new Date('2026-08-01T10:00:00').getTime(), NOW), '2026
 assert.equal(relativeTime(0, NOW), '')
 assert.equal(relativeTime(new Date('2026-09-23T01:00:00').getTime(), NOW), '19 小時前', '今天的稍早算小時前')
 
-/* ---------- PWA：離線可用需要的檔案 ---------- */const root = new URL('..', import.meta.url)
+/* ---------- 匯出前檢查：必填欄位 ---------- */
+const complete = {
+  payerId: 'p1',
+  beneficiaryIds: ['p2'],
+  amount: '128.5',
+  paidAtText: '2026-09-11 23:52',
+  note: '',
+}
+assert.deepEqual(missingFields(complete), [], '都填好了就不該有缺')
+/* 付款時間與備注二選一：只有備注也可以 */
+assert.deepEqual(missingFields({ ...complete, paidAtText: '', note: '午餐' }), [])
+assert.deepEqual(missingFields({ ...complete, paidAtText: '   ', note: '午餐' }), [], '只有空白的付款時間不算填了')
+assert.deepEqual(missingFields({ ...complete, paidAtText: '', note: '' }), ['付款時間或備注'])
+assert.deepEqual(missingFields({ ...complete, payerId: '' }), ['付錢人'])
+assert.deepEqual(missingFields({ ...complete, beneficiaryIds: [] }), ['受益人'])
+assert.deepEqual(missingFields({ ...complete, amount: '' }), ['錢'])
+assert.deepEqual(missingFields({ ...complete, amount: '  ' }), ['錢'])
+assert.deepEqual(missingFields({ payerId: '', beneficiaryIds: [], amount: '', paidAtText: '', note: '' }), [
+  '付錢人',
+  '受益人',
+  '錢',
+  '付款時間或備注',
+])
+/* 沒有圖片的記錄（手動新增）一樣只看這四個規則 */
+assert.deepEqual(missingFields({ ...complete, file: null, url: '' }), [])
+assert.deepEqual(missingFields(null), [])
+
+const exportList = [
+  { id: 'a', fileName: 'a.png', ...complete },
+  { id: 'b', fileName: 'b.png', ...complete, amount: '' },
+  { id: 'c', fileName: 'c.png', ...complete, payerId: '' },
+  { id: 'd', fileName: 'd.png', ...complete, amount: '', paidAtText: '', note: '' },
+]
+const bad = findIncomplete(exportList, (r) => `本機-${r.id}`)
+assert.equal(bad.length, 3, '只有三筆沒填完')
+assert.equal(bad[0].label, '本機-b')
+assert.deepEqual(bad[0].missing, ['錢'])
+assert.deepEqual(bad[1].missing, ['付錢人'])
+assert.deepEqual(bad[2].missing, ['錢', '付款時間或備注'])
+assert.match(incompleteMessage(bad), /本機-d：缺 錢、付款時間或備注/)
+assert.match(incompleteMessage(bad, 1), /還有 2 筆/)
+assert.equal(findIncomplete(exportList.filter((r) => r.id === 'a')).length, 0)
+
+/* ---------- PWA：離線可用需要的檔案 ---------- */
+const root = new URL('..', import.meta.url)
 const readRoot = (f) => readFileSync(new URL(f, root), 'utf8')
 
 for (const file of [
