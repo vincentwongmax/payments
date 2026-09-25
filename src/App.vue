@@ -2998,39 +2998,59 @@ onUnmounted(() => {
         <div class="viewer-gal">
           <button
             type="button"
-            class="btn btn-icon"
+            class="btn btn-icon gal-nav"
             :class="{ 'is-busy': viewingImages.length < 2 }"
             :aria-disabled="viewingImages.length < 2"
+            aria-label="上一張"
+            title="上一張"
             @click="stepImage(-1)"
           >
-            上一張
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M15 5l-7 7 7 7" />
+            </svg>
           </button>
           <button
             type="button"
-            class="btn btn-icon"
+            class="btn btn-icon gal-nav"
             :class="{ 'is-busy': viewingImages.length < 2 }"
             :aria-disabled="viewingImages.length < 2"
+            aria-label="下一張"
+            title="下一張"
             @click="stepImage(1)"
           >
-            下一張
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M9 5l7 7-7 7" />
+            </svg>
           </button>
           <span class="spacer" />
           <template v-if="!viewing.locked">
-            <button type="button" class="btn btn-icon" @click="viewerPickEl.click()">
-              上傳圖片
+            <button type="button" class="btn btn-icon" aria-label="上傳圖片" title="上傳圖片" @click="viewerPickEl.click()">
+              上傳
             </button>
             <button
               type="button"
               class="btn btn-icon"
               :class="{ 'is-busy': currentImage?.isMain }"
               :aria-disabled="currentImage?.isMain"
-              title="把目前這張變成卡片的縮圖（並用它重新辨識）"
+              aria-label="設為縮圖"
+              title="設為縮圖：把目前這張變成卡片的縮圖（並用它重新辨識）"
               @click="setViewerImageAsMain"
             >
-              設為縮圖
+              預設
             </button>
-            <button type="button" class="btn btn-icon btn-danger" @click="deleteViewerImage">
-              刪除這張
+            <button
+              type="button"
+              class="btn btn-icon btn-danger gal-trash"
+              aria-label="刪除這張"
+              title="刪除這張圖片"
+              @click="deleteViewerImage"
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M4 7h16" />
+                <path d="M9 7V5h6v2" />
+                <path d="M6 7l1 13h10l1-13" />
+                <path d="M10 11v6M14 11v6" />
+              </svg>
             </button>
           </template>
           <span v-else class="hint">已鎖定：只能看圖，要加圖或刪圖請先解除</span>
@@ -3851,6 +3871,17 @@ onUnmounted(() => {
   padding: 8px 0;
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
+}
+
+/* 箭頭與垃圾桶圖示：跟文字按鈕一樣高，圖示自己置中 */
+.gal-nav,
+.gal-trash {
+  padding: 0 9px;
+}
+
+.gal-nav svg,
+.gal-trash svg {
+  display: block;
 }
 
 .viewer-msg {
