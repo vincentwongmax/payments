@@ -3106,8 +3106,12 @@ onUnmounted(() => {
   font-variant-numeric: tabular-nums;
 }
 
+/*
+ * 表格裡的欄位格：不要圓角——選取時畫出來的外框是直的（方框），
+ * 有圓角的話每一格的框會變成弧形，看起來像一排小按鈕。
+ */
 .plain-cell {
-  border-radius: 6px;
+  border-radius: 0;
   cursor: pointer;
 }
 
