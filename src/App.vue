@@ -4701,9 +4701,9 @@ onUnmounted(() => {
     flex-wrap: wrap;
   }
 
-  /* 看圖：上下幾乎用滿整個畫面（只留 4px），左右各多留一點才不會太滿 */
+  /* 看圖：幾乎用滿整個畫面，四邊只留 4px（圖片區自己撐高、只有它捲動） */
   .viewer {
-    width: calc(100vw - 24px);
+    width: calc(100vw - 8px);
     max-width: none;
     height: calc(100vh - 8px);
     height: calc(100dvh - 8px);
