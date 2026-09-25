@@ -2181,7 +2181,24 @@ onUnmounted(() => {
           <p class="hint">分類管理、更新、資料統計與版本資訊。</p>
         </div>
         <div class="head-btns">
-          <button class="btn" @click="closeSettings">返回</button>
+          <!-- 手機版做成 iOS 那樣的「‹ 主頁」（這一條會固定在畫面最上面，往下捲也不會消失） -->
+          <button class="btn back-btn" @click="closeSettings">
+            <svg
+              class="back-chevron only-rwd"
+              viewBox="0 0 24 24"
+              width="15"
+              height="15"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M15 5l-7 7 7 7" />
+            </svg>
+            <span class="full-label">返回</span><span class="short-label">主頁</span>
+          </button>
         </div>
       </header>
 
@@ -3686,11 +3703,27 @@ onUnmounted(() => {
     font-size: 21px;
   }
 
-  /* 設定頁：返回鍵放在左上角（標題在它右邊），不用再伸到大拇指按不到的右上角 */
+  /* 設定頁：返回鍵放在左上角（標題在它右邊），而且整條固定在畫面上方不會捲走 */
   .head-settings {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    /* 左右貼齊螢幕、往上貼齊頂端（.page 在手機是 18px／12px 的 padding） */
+    margin: -18px -12px 14px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    background: var(--bg);
     align-items: center;
     justify-content: flex-start;
     gap: 10px;
+  }
+
+  .head-settings h1 {
+    font-size: 20px;
+  }
+
+  .head-settings .hint {
+    font-size: 12px;
   }
 
   .head-settings .head-btns {
@@ -3700,6 +3733,35 @@ onUnmounted(() => {
 
   .head-settings .head-btns .btn {
     flex: 0 0 auto;
+  }
+
+  /* iOS 風格的返回：沒有框線，主色文字＋「‹」 */
+  .head-settings .back-btn {
+    min-height: 30px;
+    padding: 0;
+    border: 0;
+    background: none;
+    box-shadow: none;
+    color: var(--accent);
+    font-size: 16px;
+    font-weight: 550;
+  }
+
+  .head-settings .back-btn:hover:not(:disabled),
+  .head-settings .back-btn:active:not(:disabled) {
+    border: 0;
+    background: none;
+    box-shadow: none;
+    color: var(--accent-dark);
+  }
+
+  .head-settings .back-btn:active:not(:disabled) {
+    opacity: 0.5;
+    transform: none;
+  }
+
+  .back-chevron {
+    margin-right: 1px;
   }
 
   .card {
