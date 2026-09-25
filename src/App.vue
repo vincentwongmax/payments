@@ -3310,8 +3310,20 @@ onUnmounted(() => {
           <span class="zoom-group">
             <!-- 桌機版：百分比放在「縮小」左邊 -->
             <span class="zoom-value">{{ Math.round(zoom * 100) }}%</span>
-            <button type="button" class="btn btn-icon" @click="zoomBy(1 / 1.25)">縮小 −</button>
-            <button type="button" class="btn btn-icon" @click="zoomBy(1.25)">放大 ＋</button>
+            <button type="button" class="btn btn-icon" aria-label="縮小" title="縮小" @click="zoomBy(1 / 1.25)">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="10.5" cy="10.5" r="6.5" />
+                <path d="M15.2 15.2 20 20" />
+                <path d="M7.5 10.5h6" />
+              </svg>
+            </button>
+            <button type="button" class="btn btn-icon" aria-label="放大" title="放大" @click="zoomBy(1.25)">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="10.5" cy="10.5" r="6.5" />
+                <path d="M15.2 15.2 20 20" />
+                <path d="M10.5 7.5v6M7.5 10.5h6" />
+              </svg>
+            </button>
             <button type="button" class="btn btn-icon" @click="resetZoom">還原</button>
           </span>
         </div>
@@ -3404,8 +3416,20 @@ onUnmounted(() => {
           <span class="spacer" />
           <!-- 手機版才出現：縮放按鈕排在關閉的左邊（桌機版用上面那一組） -->
           <span class="zoom-group">
-            <button type="button" class="btn btn-icon" @click="zoomBy(1 / 1.25)">縮小 −</button>
-            <button type="button" class="btn btn-icon" @click="zoomBy(1.25)">放大 ＋</button>
+            <button type="button" class="btn btn-icon" aria-label="縮小" title="縮小" @click="zoomBy(1 / 1.25)">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="10.5" cy="10.5" r="6.5" />
+                <path d="M15.2 15.2 20 20" />
+                <path d="M7.5 10.5h6" />
+              </svg>
+            </button>
+            <button type="button" class="btn btn-icon" aria-label="放大" title="放大" @click="zoomBy(1.25)">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="10.5" cy="10.5" r="6.5" />
+                <path d="M15.2 15.2 20 20" />
+                <path d="M10.5 7.5v6M7.5 10.5h6" />
+              </svg>
+            </button>
             <button type="button" class="btn btn-icon" @click="resetZoom">還原</button>
           </span>
           <button type="button" class="btn" @click="closeViewer()">關閉</button>
@@ -4677,9 +4701,9 @@ onUnmounted(() => {
     flex-wrap: wrap;
   }
 
-  /* 看圖：幾乎用滿整個畫面，只留 4px 邊界（圖片區自己撐高、只有它捲動） */
+  /* 看圖：上下幾乎用滿整個畫面（只留 4px），左右各多留一點才不會太滿 */
   .viewer {
-    width: calc(100vw - 8px);
+    width: calc(100vw - 24px);
     max-width: none;
     height: calc(100vh - 8px);
     height: calc(100dvh - 8px);
