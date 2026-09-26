@@ -2527,6 +2527,39 @@ watch(
   { deep: true },
 )
 
+/*
+ * 手機版：往下滑到「幣別／新增／貼上／上傳」那一列離開畫面時，把記錄清單的左右內距
+ * 收掉（記錄框擴到卡片的內緣），這樣同一個方向只會看到卡片框＋記錄框，不會覺得
+ * 框線很多層；那一列又滑回來就還原。只動左右，卡片自己的框與上下內距都不變，
+ * 桌機（>560px）完全不受影響。
+ */
+const payBarEl = ref(null)
+const recFlush = ref(false)
+let payBarObserver = null
+
+function watchPayBar() {
+  payBarObserver?.disconnect()
+  recFlush.value = false
+  const bar = payBarEl.value
+  if (!bar || typeof IntersectionObserver !== 'function') return
+  payBarObserver = new IntersectionObserver(
+    (entries) => {
+      const entry = entries[entries.length - 1]
+      const mobile = window.matchMedia?.('(max-width: 560px)').matches
+      /* 只有「整列滑到畫面上面去」才算，還看得到一點點就還原 */
+      recFlush.value = !!mobile && !entry.isIntersecting && entry.boundingClientRect.bottom <= 0
+    },
+    { threshold: 0 },
+  )
+  payBarObserver.observe(bar)
+}
+
+/* 設定頁開著時記錄卡片不在 DOM 裡，回到主畫面要重新掛一次 */
+watch(view, async () => {
+  await nextTick()
+  watchPayBar()
+})
+
 onMounted(async () => {
   /*
    * 重新整理時人可能停在設定頁，歷史記錄裡就留著那個記號；
@@ -2647,10 +2680,13 @@ onMounted(async () => {
   } catch (e) {
     storageError.value = `讀不到本機資料：${e?.message ?? e}`
   }
+  await nextTick()
+  watchPayBar()
   runOcr()
 })
 
 onUnmounted(() => {
+  payBarObserver?.disconnect()
   document.removeEventListener('paste', onPaste)
   document.removeEventListener('touchstart', onTouchStart)
   document.removeEventListener('touchmove', onTouchMove)
@@ -3209,10 +3245,10 @@ onUnmounted(() => {
       </p>
     </section>
 
-    <section class="card">
+    <section class="card card-records" :class="{ 'is-flush': recFlush }">
       <div class="card-head">
         <h2>付款記錄 <span class="count">{{ records.length }}</span></h2>
-        <div class="head-actions">
+        <div ref="payBarEl" class="head-actions">
           <label class="inline-field">
             <span class="lbl"
               ><span class="full-label">預設幣別</span><span class="short-label">幣別</span></span
@@ -4911,6 +4947,21 @@ onUnmounted(() => {
   /* 記錄由下往上排：陣列最後一筆（最新、序號最大）顯示在最上面 */
   .recs {
     flex-direction: column-reverse;
+  }
+
+  /*
+   * 滑到「幣別／新增／貼上／上傳」那一列離開畫面時（.is-flush，見 watchPayBar），
+   * 記錄框擴到卡片的內緣：-14px 剛好抵掉 .card 的左右內距，記錄框就貼齊卡片框，
+   * 同一個方向只會看到卡片框＋記錄框兩層。滑回來就滑回去（0.25 秒過渡）。
+   * 只動左右：卡片自己的框、上下內距與記錄之間的間距都不變。
+   */
+  .card-records .recs {
+    transition: margin 0.25s ease;
+  }
+
+  .card-records.is-flush .recs {
+    margin-left: -14px;
+    margin-right: -14px;
   }
 
   .head-actions {
