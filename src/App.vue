@@ -4950,20 +4950,29 @@ onUnmounted(() => {
   }
 
   /*
-   * 滑到「幣別／新增／貼上／上傳」那一列離開畫面時（.is-flush，見 watchPayBar），
-   * 記錄清單往左右各擴 15px ＝ 卡片的 14px 內距 ＋ 1px 卡片框，並且鋪上跟卡片一樣的
-   * 白底：白底會蓋掉卡片自己的左右框，所以記錄區這一段只看得到「記錄自己的框」，
-   * 記錄與記錄之間的縫隙則完全沒有直線（記錄看起來像貼在卡片邊上）。
-   * 標題與按鈕列那一段的卡片框不受影響，滑回來就還原（0.25 秒過渡）。
+   * 滑到「幣別／新增／貼上／上傳」那一列離開畫面時（.is-flush，見 watchPayBar）：
+   * 付款記錄那張卡片整張消失（框、白底、陰影全部變透明），只留下每一筆記錄，
+   * 記錄清單同時往左右各擴 15px（卡片的 14px 內距 ＋ 1px 卡片框），記錄就填滿
+   * 卡片原本的寬度、直接落在頁面底色上。滑回來就還原（0.25 秒過渡）。
+   * :has(.recs) 是為了普通文字模式（表格）不受影響——那裡沒有記錄卡片。
    */
+  .card-records:has(.recs) {
+    transition: background-color 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+  }
+
+  .card-records.is-flush:has(.recs) {
+    border-color: transparent;
+    background-color: transparent;
+    box-shadow: none;
+  }
+
   .card-records .recs {
-    transition: margin 0.25s ease, background-color 0.25s ease;
+    transition: margin 0.25s ease;
   }
 
   .card-records.is-flush .recs {
     margin-left: -15px;
     margin-right: -15px;
-    background-color: var(--surface);
   }
 
   .head-actions {
