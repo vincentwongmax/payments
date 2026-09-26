@@ -41,11 +41,16 @@ if (import.meta.env.PROD && 'serviceWorker' in navigator) {
        * 第一次打開時 Service Worker 還沒接管這一頁，這頁抓過的檔案不是它抓的，
        * 所以不會進快取（例如 tesseract.js 那個動態載入的 chunk）。
        * 把這一頁用過的站內檔案清單交給它補齊，第二次開始（就算沒網路）才開得起來。
+       * QR CODE 傳輸那兩個頁面用不到就先抓下來，之後完全沒網路也能做光學傳輸。
        */
-      const urls = performance
-        .getEntriesByType('resource')
-        .map((entry) => entry.name)
-        .filter((url) => url.startsWith(location.origin))
+      const urls = [
+        ...performance
+          .getEntriesByType('resource')
+          .map((entry) => entry.name)
+          .filter((url) => url.startsWith(location.origin)),
+        new URL('decimen/sender.html', document.baseURI).href,
+        new URL('decimen/receiver.html', document.baseURI).href,
+      ]
       if (reg.active && urls.length) reg.active.postMessage({ type: 'warm', urls })
     } catch {
       /* 註冊失敗（例如隱私模式）就照舊：有網路才用 */
