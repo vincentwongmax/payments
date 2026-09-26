@@ -4951,17 +4951,19 @@ onUnmounted(() => {
 
   /*
    * 滑到「幣別／新增／貼上／上傳」那一列離開畫面時（.is-flush，見 watchPayBar），
-   * 記錄框擴到卡片的內緣：-14px 剛好抵掉 .card 的左右內距，記錄框就貼齊卡片框，
-   * 同一個方向只會看到卡片框＋記錄框兩層。滑回來就滑回去（0.25 秒過渡）。
-   * 只動左右：卡片自己的框、上下內距與記錄之間的間距都不變。
+   * 記錄清單往左右各擴 15px ＝ 卡片的 14px 內距 ＋ 1px 卡片框，並且鋪上跟卡片一樣的
+   * 白底：白底會蓋掉卡片自己的左右框，所以記錄區這一段只看得到「記錄自己的框」，
+   * 記錄與記錄之間的縫隙則完全沒有直線（記錄看起來像貼在卡片邊上）。
+   * 標題與按鈕列那一段的卡片框不受影響，滑回來就還原（0.25 秒過渡）。
    */
   .card-records .recs {
-    transition: margin 0.25s ease;
+    transition: margin 0.25s ease, background-color 0.25s ease;
   }
 
   .card-records.is-flush .recs {
-    margin-left: -14px;
-    margin-right: -14px;
+    margin-left: -15px;
+    margin-right: -15px;
+    background-color: var(--surface);
   }
 
   .head-actions {
