@@ -34,6 +34,7 @@ import {
   fieldName,
   findIncomplete,
   incompleteMessage,
+  missingFields,
   normalizeRules,
 } from './lib/validate.js'
 import { missingPersonIds, personNameSnapshot, recordsUsingPerson, restoreMissingPersons } from './lib/persons.js'
@@ -477,7 +478,8 @@ function newRecord(file, time, hash) {
     url: URL.createObjectURL(file),
     fileTime: time.ms,
     fileTimeSource: time.source,
-    ocrStatus: 'pending',
+    /* 暫停 OCR 時上傳的圖直接標成「已跳過辨識」 */
+    ocrStatus: pauseOcr.value ? 'skipped' : 'pending',
   }
 }
 
@@ -708,6 +710,51 @@ async function loadStorageInfo() {
 
 const mb = (bytes) => (bytes ? `${(bytes / 1048576).toFixed(1)} MB` : '0 MB')
 
+/*
+ * 只有 ?admin=1（或 #admin=1）才會顯示「瀏覽器已用空間」那一行。
+ * 那是瀏覽器回報的整體用量，包含 OCR 引擎、語言包與離線快取那些系統檔案，
+ * 對一般使用者沒有意義（他要看的是自己的資料有多大）。
+ */
+const isAdmin = (() => {
+  try {
+    const search = new URLSearchParams(location.search)
+    const hash = new URLSearchParams(String(location.hash).replace(/^#/, ''))
+    const flag = search.get('admin') ?? hash.get('admin') ?? ''
+    return flag === '1' || flag === 'true'
+  } catch {
+    return false
+  }
+})()
+
+/*
+ * 自己的資料有多大：只算使用者真的放進來的東西——
+ * 每一筆記錄的圖片（主圖＋附加圖片）與文字欄位的概略大小，
+ * 不含 OCR 語言包、decimen 那兩頁的快取與其他系統檔案。
+ */
+const ownUsage = computed(() => {
+  let images = 0
+  let notes = 0
+  for (const r of records.value) {
+    images += r.file?.size ?? 0
+    for (const img of r.extraImages ?? []) images += img.file?.size ?? 0
+    /* 文字欄位很小，但加起來也是資料，粗略用字數估（UTF-16 約 2 bytes/字） */
+    notes +=
+      (String(r.fileName ?? '').length +
+        String(r.note ?? '').length +
+        String(r.paidAtText ?? '').length +
+        String(r.amount ?? '').length) *
+      2
+  }
+  for (const p of persons.value) notes += String(p.name ?? '').length * 2
+  return {
+    images,
+    records: records.value.length,
+    persons: persons.value.length,
+    notes,
+    total: images + notes,
+  }
+})
+
 function addCategoryFromInput() {
   const text = newCategory.value.trim()
   if (!text) return
@@ -779,7 +826,7 @@ function togglePlainMode() {
     : '已切換回正常模式，按「返回」就會看到'
 }
 
-/* ---------- 顏色：鎖定框線與選取外框可以自己選 ---------- */
+/* ---------- 顏色：鎖定框線、選取外框與「還沒填完」的外框可以自己選 ---------- */
 const COLOR_PRESETS = [
   { hex: '#e07297', name: '玫瑰粉' },
   { hex: '#2f6f4e', name: '森林綠' },
@@ -791,13 +838,54 @@ const COLOR_PRESETS = [
 ]
 const DEFAULT_LOCK_COLOR = '#e07297'
 const DEFAULT_PICK_COLOR = '#2f6f4e'
+const DEFAULT_NEED_COLOR = '#c8860a'
 
 const lockColor = ref(DEFAULT_LOCK_COLOR)
 const pickColor = ref(DEFAULT_PICK_COLOR)
+const needColor = ref(DEFAULT_NEED_COLOR)
 /* 輸入框裡的字（按 Enter 或離開欄位才套用，打錯就還原） */
 const lockDraft = ref(DEFAULT_LOCK_COLOR)
 const pickDraft = ref(DEFAULT_PICK_COLOR)
+const needDraft = ref(DEFAULT_NEED_COLOR)
 const badColor = ref('')
+
+/** 三組顏色（變數名稱、ref、預設值）集中在這裡，設定頁與套用邏輯都吃這一份 */
+const COLOR_SLOTS = [
+  {
+    key: 'lock',
+    label: '鎖定框線顏色',
+    hint: '鎖定那一筆時的外框與「已鎖定」標記',
+    color: lockColor,
+    draft: lockDraft,
+    preset: DEFAULT_LOCK_COLOR,
+    /* 主色、深色版（混黑 22%）、淡色版（混白 88%）；沒有用到的那個就留空 */
+    base: '--lock',
+    dark: { name: '--lock-dark', target: '#000000', ratio: 0.22 },
+    soft: { name: '--lock-soft', target: '#ffffff', ratio: 0.88 },
+  },
+  {
+    key: 'pick',
+    label: '選取顏色',
+    hint: '點到某一筆時亮起來的外框（含淡色光暈）',
+    color: pickColor,
+    draft: pickDraft,
+    preset: DEFAULT_PICK_COLOR,
+    base: '--pick',
+    dark: null,
+    soft: { name: '--pick-soft', target: '#ffffff', ratio: 0.88 },
+  },
+  {
+    key: 'need',
+    label: '還沒填完的外框顏色',
+    hint: '依「匯出前先檢查」的規則，欄位有缺的記錄會用這個顏色',
+    color: needColor,
+    draft: needDraft,
+    preset: DEFAULT_NEED_COLOR,
+    base: '--need',
+    dark: { name: '--need-dark', target: '#000000', ratio: 0.22 },
+    soft: { name: '--need-soft', target: '#ffffff', ratio: 0.88 },
+  },
+]
 
 /** `#rgb`／`#rrggbb`（# 可以省略）才收，其他一律當成沒填 */
 function normalizeHex(value) {
@@ -828,22 +916,19 @@ function mixHex(hex, target, ratio) {
 function applyColors() {
   const root = document.documentElement
   const set = (name, value) => (value ? root.style.setProperty(name, value) : root.style.removeProperty(name))
-  const lock = lockColor.value
-  const lockIsDefault = lock === DEFAULT_LOCK_COLOR
-  set('--lock', lockIsDefault ? '' : lock)
-  set('--lock-dark', lockIsDefault ? '' : mixHex(lock, '#000000', 0.22))
-  set('--lock-soft', lockIsDefault ? '' : mixHex(lock, '#ffffff', 0.88))
-  const pick = pickColor.value
-  const pickIsDefault = pick === DEFAULT_PICK_COLOR
-  set('--pick', pickIsDefault ? '' : pick)
-  set('--pick-soft', pickIsDefault ? '' : mixHex(pick, '#ffffff', 0.88))
+  for (const slot of COLOR_SLOTS) {
+    const hex = slot.color.value
+    const isDefault = hex === slot.preset
+    set(slot.base, isDefault ? '' : hex)
+    if (slot.dark) set(slot.dark.name, isDefault ? '' : mixHex(hex, slot.dark.target, slot.dark.ratio))
+    if (slot.soft) set(slot.soft.name, isDefault ? '' : mixHex(hex, slot.soft.target, slot.soft.ratio))
+  }
 }
 
 watch(
-  [lockColor, pickColor],
+  COLOR_SLOTS.map((s) => s.color),
   () => {
-    lockDraft.value = lockColor.value
-    pickDraft.value = pickColor.value
+    for (const slot of COLOR_SLOTS) slot.draft.value = slot.color.value
     applyColors()
   },
   { immediate: true },
@@ -851,16 +936,15 @@ watch(
 
 /** 輸入框套用：合法就直接用，不合法就提示並還原成目前用的顏色 */
 function applyColorDraft(which) {
-  const draft = which === 'lock' ? lockDraft : pickDraft
-  const color = which === 'lock' ? lockColor : pickColor
-  const hex = normalizeHex(draft.value)
+  const slot = COLOR_SLOTS.find((s) => s.key === which) ?? COLOR_SLOTS[0]
+  const hex = normalizeHex(slot.draft.value)
   if (!hex) {
     badColor.value = which
-    draft.value = color.value
+    slot.draft.value = slot.color.value
     return
   }
   badColor.value = ''
-  color.value = hex
+  slot.color.value = hex
 }
 
 /**
@@ -1039,6 +1123,18 @@ async function warnIncomplete(bad) {
   )
 }
 
+/* ---------- 暫停圖片 OCR ---------- */
+/* 勾選後上傳的圖片完全不辨識，直接標成「已跳過辨識」（要跑再自己按重新辨識） */
+const pauseOcr = ref(false)
+
+/* ---------- 付款時間的「現在」按鈕 ---------- */
+const nowButton = ref(false)
+
+/** 勾選「暫停圖片 OCR」時，把還在排隊的圖片一起停下來 */
+function onPauseOcrChange() {
+  if (pauseOcr.value) skipPendingOcr()
+}
+
 /** 通過回傳 true；有缺就跳出清單並回傳 false */
 async function exportAllowed() {
   const bad = incompleteRecords()
@@ -1046,6 +1142,21 @@ async function exportAllowed() {
   await warnIncomplete(bad)
   return false
 }
+
+/*
+ * 還沒填完的記錄：卡片外框會變黃（顏色可在「設定 → 顏色」改）。
+ * 判斷規則跟匯出前的檢查完全同一套，也尊重「這幾筆不用檢查」的設定。
+ * 關掉「匯出前先檢查」時就不標（不然兩邊說法會不一致）。
+ */
+const needIds = computed(() => {
+  if (!checkBeforeExport.value) return new Set()
+  const ids = new Set()
+  for (const r of records.value) {
+    if (r.checkExport === false) continue
+    if (missingFields(r, exportRules.value).length) ids.add(r.id)
+  }
+  return ids
+})
 
 /* ---------- 匯出文字（只文字、不含圖片） ---------- */
 const recordsText = () => recordsToText(records.value, persons.value)
@@ -1661,8 +1772,40 @@ function stopOcr() {
   })
 }
 
+/**
+ * 暫停 OCR 時，把所有還在排隊的圖片直接標成「已跳過辨識」。
+ * 上傳時就會先擋掉（見 markPendingOcr），這裡是使用者中途勾選時的補救。
+ */
+function skipPendingOcr() {
+  for (const r of records.value) {
+    if (r.ocrStatus === 'pending') {
+      r.ocrStatus = 'skipped'
+      r.ocrProgress = 0
+    }
+  }
+  ocrStop.value = true
+}
+
+/**
+ * 圖片準備好之後要排辨識：暫停中就直接標成已跳過，
+ * 不然就是一般的 pending（使用者之後可以自己按重新辨識）。
+ */
+function markPendingOcr(record) {
+  record.ocrProgress = 0
+  record.ocrError = ''
+  if (pauseOcr.value) {
+    record.ocrStatus = 'skipped'
+    return
+  }
+  record.ocrStatus = 'pending'
+}
+
 async function runOcr() {
   if (ocrBusy.value) return
+  if (pauseOcr.value) {
+    skipPendingOcr()
+    return
+  }
   ocrBusy.value = true
   ocrStop.value = false
   try {
@@ -1839,9 +1982,7 @@ function setMainImage(record, { picked, hash, time }) {
     record.fileTimeSource = time.source
   }
   record.url = URL.createObjectURL(picked)
-  record.ocrStatus = 'pending'
-  record.ocrProgress = 0
-  record.ocrError = ''
+  markPendingOcr(record)
   runOcr()
 }
 
@@ -1922,9 +2063,7 @@ async function unlockToEdit(record) {
 /* 辨識失敗或逾時後，讓使用者可以重試 */
 function retryOcr(record) {
   if (record.locked) return
-  record.ocrStatus = 'pending'
-  record.ocrError = ''
-  record.ocrProgress = 0
+  markPendingOcr(record)
   runOcr()
 }
 
@@ -1982,9 +2121,7 @@ function setViewerImageAsMain() {
   record.fileTimeSource = main.fileTimeSource
   record.extraImages = extras
   /* 主要圖片換人了 → 用新的一張重新辨識金額與時間（自己填過的內容不覆蓋） */
-  record.ocrStatus = 'pending'
-  record.ocrProgress = 0
-  record.ocrError = ''
+  markPendingOcr(record)
   viewIndex.value = 0
   viewerMsg.value = '已設為縮圖，並重新辨識這一張的金額與時間'
   runOcr()
@@ -2026,9 +2163,7 @@ async function deleteViewerImage() {
   revoke(removed?.url)
   /* 刪掉的是主要圖片而且還有別的圖片 → 新的主要圖片要重新辨識 */
   if (wasMain && main.file) {
-    record.ocrStatus = 'pending'
-    record.ocrProgress = 0
-    record.ocrError = ''
+    markPendingOcr(record)
     runOcr()
   }
   const nextAt = Math.min(at, recordImages(record).length - 1)
@@ -2868,9 +3003,14 @@ async function persist() {
      * DataCloneError），所以要轉成純物件再寫進去。
      */
     await put('settings', { id: 'exportRules', value: plainCopy(exportRules.value) })
-    /* 外觀：鎖定框線與選取外框的顏色 */
+    /* 外觀：鎖定框線、選取外框與「還沒填完」的外框顏色 */
     await put('settings', { id: 'lockColor', value: lockColor.value })
     await put('settings', { id: 'pickColor', value: pickColor.value })
+    await put('settings', { id: 'needColor', value: needColor.value })
+    /* 暫停圖片 OCR：勾選期間上傳的圖不辨識（直接標成已跳過） */
+    await put('settings', { id: 'pauseOcr', value: pauseOcr.value })
+    /* 付款時間右邊要不要有「現在」按鈕 */
+    await put('settings', { id: 'nowButton', value: nowButton.value })
     storageError.value = ''
   } catch (e) {
     storageError.value = `資料無法存到本機：${e?.message ?? e}`
@@ -2889,6 +3029,9 @@ watch(
     exportRules,
     lockColor,
     pickColor,
+    needColor,
+    pauseOcr,
+    nowButton,
   ],
   () => {
     clearTimeout(saveTimer)
@@ -3031,6 +3174,10 @@ onMounted(async () => {
     /* 外觀顏色：存壞了或沒存過就回到預設色 */
     lockColor.value = normalizeHex(settings.find((s) => s.id === 'lockColor')?.value) || DEFAULT_LOCK_COLOR
     pickColor.value = normalizeHex(settings.find((s) => s.id === 'pickColor')?.value) || DEFAULT_PICK_COLOR
+    needColor.value = normalizeHex(settings.find((s) => s.id === 'needColor')?.value) || DEFAULT_NEED_COLOR
+    /* 暫停圖片 OCR 與付款時間的「現在」按鈕（預設都是關的） */
+    pauseOcr.value = settings.find((s) => s.id === 'pauseOcr')?.value === true
+    nowButton.value = settings.find((s) => s.id === 'nowButton')?.value === true
     const links = settings.find((s) => s.id === 'appliedShareLinks')?.value
     appliedLinks = Array.isArray(links) ? links : []
     /* 手動新增的編號：照建立順序重排一次（刪過的話號碼會補回來） */
@@ -3228,6 +3375,32 @@ onUnmounted(() => {
         </p>
       </section>
 
+      <!-- 辨識與輸入：暫停 OCR、付款時間的「現在」按鈕 -->
+      <section class="card">
+        <div class="card-head card-head-inline">
+          <h2>辨識與輸入</h2>
+        </div>
+
+        <label class="checkbox">
+          <input v-model="pauseOcr" type="checkbox" @change="onPauseOcrChange" />
+          暫停圖片 OCR（上傳的圖片先不辨識）
+        </label>
+        <p class="hint">
+          勾選之後上傳的圖片<strong>完全不會執行辨識</strong>，狀態直接標成「已跳過辨識」
+          （金額與時間自己填）。已經在排隊的也會一起停下來，要跑再自己按那一筆的重新辨識。
+        </p>
+
+        <label class="checkbox">
+          <input v-model="nowButton" type="checkbox" />
+          付款時間右邊顯示「現在」按鈕
+        </label>
+        <p class="hint">
+          打開之後，每一筆的付款時間欄位右邊（日曆圖示的左邊）會多一顆「<strong>現在</strong>」，
+          點一下就把付款時間填成現在（例：<code>2026-09-28 12:46</code>），不用自己打。
+          填完會算「你自己填的」，之後重新辨識不會被蓋掉。
+        </p>
+      </section>
+
       <section class="card">
         <div class="card-head card-head-inline">
           <h2>顯示模式</h2>
@@ -3255,81 +3428,46 @@ onUnmounted(() => {
         </div>
         <p class="hint">
           「鎖定框線」是鎖定那一筆記錄時的外框與標記；「選取顏色」是你點某一筆時亮起來的外框
-          （正常模式的卡片與普通文字模式的整列都是）。除了下面七個內建色，也可以直接輸入自己的
+          （正常模式的卡片與普通文字模式的整列都是）；「還沒填完的外框」是依「匯出前先檢查」的規則，
+          欄位有缺的那幾筆會用這個顏色提醒你。除了下面七個內建色，也可以直接輸入自己的
           HTML 色碼，例如 <code>#e07297</code>。
         </p>
 
-        <div class="color-row">
-          <span class="lbl">鎖定框線顏色</span>
+        <div v-for="slot in COLOR_SLOTS" :key="slot.key" class="color-row">
+          <span class="lbl">{{ slot.label }}</span>
           <div class="swatches">
             <button
               v-for="c in COLOR_PRESETS"
-              :key="`lock-${c.hex}`"
+              :key="`${slot.key}-${c.hex}`"
               type="button"
               class="swatch"
-              :class="{ on: lockColor === c.hex }"
+              :class="{ on: slot.color.value === c.hex }"
               :style="{ background: c.hex }"
               :title="c.name"
-              :aria-label="`鎖定框線用${c.name}`"
-              :aria-pressed="lockColor === c.hex ? 'true' : 'false'"
-              @click="lockColor = c.hex"
+              :aria-label="`${slot.label}用${c.name}`"
+              :aria-pressed="slot.color.value === c.hex ? 'true' : 'false'"
+              @click="slot.color.value = c.hex"
             />
           </div>
           <div class="color-code-row">
             <input
-              v-model="lockDraft"
+              v-model="slot.draft.value"
               class="input color-code"
               type="text"
               maxlength="7"
               spellcheck="false"
               autocapitalize="off"
               autocorrect="off"
-              placeholder="#e07297"
-              aria-label="鎖定框線的 HTML 色碼"
-              @change="applyColorDraft('lock')"
-              @keyup.enter="applyColorDraft('lock')"
+              :placeholder="slot.preset"
+              :aria-label="`${slot.label}的 HTML 色碼`"
+              @change="applyColorDraft(slot.key)"
+              @keyup.enter="applyColorDraft(slot.key)"
             />
-            <button type="button" class="btn btn-icon" @click="lockColor = DEFAULT_LOCK_COLOR">預設色</button>
+            <button type="button" class="btn btn-icon" @click="slot.color.value = slot.preset">預設色</button>
           </div>
-          <p v-if="badColor === 'lock'" class="hint color-bad">
-            色碼要像 <code>#e07297</code>（3 或 6 位十六進位），已還原成目前用的顏色。
-          </p>
-        </div>
-
-        <div class="color-row">
-          <span class="lbl">選取顏色</span>
-          <div class="swatches">
-            <button
-              v-for="c in COLOR_PRESETS"
-              :key="`pick-${c.hex}`"
-              type="button"
-              class="swatch"
-              :class="{ on: pickColor === c.hex }"
-              :style="{ background: c.hex }"
-              :title="c.name"
-              :aria-label="`選取外框用${c.name}`"
-              :aria-pressed="pickColor === c.hex ? 'true' : 'false'"
-              @click="pickColor = c.hex"
-            />
-          </div>
-          <div class="color-code-row">
-            <input
-              v-model="pickDraft"
-              class="input color-code"
-              type="text"
-              maxlength="7"
-              spellcheck="false"
-              autocapitalize="off"
-              autocorrect="off"
-              placeholder="#2f6f4e"
-              aria-label="選取外框的 HTML 色碼"
-              @change="applyColorDraft('pick')"
-              @keyup.enter="applyColorDraft('pick')"
-            />
-            <button type="button" class="btn btn-icon" @click="pickColor = DEFAULT_PICK_COLOR">預設色</button>
-          </div>
-          <p v-if="badColor === 'pick'" class="hint color-bad">
-            色碼要像 <code>#2f6f4e</code>（3 或 6 位十六進位），已還原成目前用的顏色。
+          <p class="hint">{{ slot.hint }}</p>
+          <p v-if="badColor === slot.key" class="hint color-bad">
+            色碼要像 <code>{{ slot.preset }}</code>（3 或 6 位十六進位），已還原成目前用的顏色。
           </p>
         </div>
 
@@ -3571,7 +3709,12 @@ onUnmounted(() => {
           <li><span>人物</span><strong>{{ persons.length }} 位</strong></li>
           <li><span>備注分類</span><strong>{{ noteCategories.length }} 個</strong></li>
           <li>
-            <span>瀏覽器已用空間</span>
+            <span>你的資料用量</span>
+            <strong>{{ mb(ownUsage.total) }}（圖片 {{ mb(ownUsage.images) }}）</strong>
+          </li>
+          <!-- 只有 ?admin=1 才看得到瀏覽器回報的整體用量（含 OCR 引擎等系統檔案） -->
+          <li v-if="isAdmin">
+            <span>瀏覽器已用空間（含系統檔案）</span>
             <strong>{{ mb(storageInfo.usage) }}<template v-if="storageInfo.quota"> / {{ mb(storageInfo.quota) }}</template></strong>
           </li>
           <li>
@@ -3813,7 +3956,7 @@ onUnmounted(() => {
               v-for="(r, i) in records"
               :key="r.id"
               class="plain-row"
-              :class="{ on: selectedId === r.id, locked: r.locked }"
+              :class="{ on: selectedId === r.id, locked: r.locked, needs: needIds.has(r.id) && !r.locked }"
               @click="selectRecord(r)"
             >
               <td
@@ -3887,6 +4030,8 @@ onUnmounted(() => {
           :index-label="seqLabels.get(r.id) ?? ''"
           :active="selectedId === r.id"
           :now="nowMs"
+          :needs="needIds.has(r.id)"
+          :now-button="nowButton"
           @view="openViewer"
           @remove="removeRecord"
           @more="openMoreRecord"
@@ -4650,6 +4795,31 @@ onUnmounted(() => {
 .plain-row.on .plain-seq {
   color: var(--pick);
   font-weight: 600;
+}
+
+/*
+ * 還沒填完的那一列：框改成黃色（跟卡片一樣，顏色可在「設定 → 顏色」改）。
+ * 放在 .on 後面、.locked 前面——鎖定的不用再填，所以鎖定色優先。
+ */
+.plain-row.needs td {
+  box-shadow: inset 0 2px 0 var(--need), inset 0 -2px 0 var(--need);
+}
+
+.plain-row.needs td:first-child {
+  box-shadow: inset 2px 0 0 var(--need), inset 0 2px 0 var(--need), inset 0 -2px 0 var(--need);
+}
+
+.plain-row.needs td:last-child {
+  box-shadow: inset -2px 0 0 var(--need), inset 0 2px 0 var(--need), inset 0 -2px 0 var(--need);
+}
+
+.plain-row.needs .plain-seq {
+  color: var(--need-dark);
+  font-weight: 600;
+}
+
+.plain-row.needs.on td {
+  background: var(--need-soft);
 }
 
 /* 已鎖定的那一列：框改成玫瑰色（跟卡片一樣），內容文字全部變灰，點下去只會問要不要解除 */

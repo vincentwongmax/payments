@@ -39,6 +39,7 @@ import {
 } from '../src/lib/notes.js'
 import { recordsToText } from '../src/lib/textExport.js'
 import {
+  beneficiaryText,
   missingPersonIds,
   personNameSnapshot,
   recordsUsingPerson,
@@ -1175,6 +1176,29 @@ assert.equal(crc32(new TextEncoder().encode('123456789')), 0xcbf43926, 'CRC-32 �
   assert.equal(view.getUint16(bytes.length - 12, true), 2, '兩筆檔案')
   /* 內容是原封不動搬進去的 */
   assert.deepEqual(bytes.slice(30 + nA, 30 + nA + a.length), a)
+}
+
+/* ---------- 受益人的純文字（鎖定時顯示用） ---------- */
+{
+  const allPersons = [
+    { id: 'p1', name: 'Vincent' },
+    { id: 'p2', name: 'Ben' },
+    { id: 'p3', name: 'Ken' },
+  ]
+  assert.equal(
+    beneficiaryText({ beneficiaryIds: ['p1', 'p2', 'p3'] }, allPersons),
+    'Vincent.Ben.Ken',
+    '受益人用「.」接起來',
+  )
+  assert.equal(beneficiaryText({ beneficiaryIds: ['p2'] }, allPersons), 'Ben')
+  assert.equal(beneficiaryText({ beneficiaryIds: [] }, allPersons), '', '沒有受益人是空字串')
+  /* 人物不見了就用記錄裡的名字快照 */
+  assert.equal(
+    beneficiaryText({ beneficiaryIds: ['gone'], beneficiaryNames: { gone: '舊同事' } }, allPersons),
+    '舊同事',
+  )
+  /* 找不到人也沒有快照就跳過，不要留下空的一段 */
+  assert.equal(beneficiaryText({ beneficiaryIds: ['p1', 'nope', 'p3'] }, allPersons), 'Vincent.Ken')
 }
 
 /* ---------- PWA：離線可用需要的檔案 ---------- */

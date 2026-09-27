@@ -9,6 +9,21 @@ export function recordsUsingPerson(records, personId) {
 }
 
 /**
+ * 受益人的名字用「.」接起來（Vincent.Ben.Ken）——鎖定時要用純文字顯示，
+ * 不再是一排按不了的按鈕。人物清單找不到就用記錄裡的快照，都沒有就跳過。
+ */
+export function beneficiaryNames(record, persons) {
+  const byId = new Map((persons ?? []).map((p) => [p.id, p.name]))
+  const snapshot = record?.beneficiaryNames ?? {}
+  return (record?.beneficiaryIds ?? [])
+    .map((id) => byId.get(id) ?? snapshot[id] ?? '')
+    .filter(Boolean)
+}
+
+/** 受益人純文字（例：Vincent.Ben.Ken）；一個都沒有就是空字串 */
+export const beneficiaryText = (record, persons) => beneficiaryNames(record, persons).join('.')
+
+/**
  * 記錄裡要存一份「人物 id → 名字」的快照。
  * 平常只是備份，真正的作用是：人物不見了（匯入對不到、資料寫到一半中斷…）
  * 的時候還知道要把他補回成什麼名字。

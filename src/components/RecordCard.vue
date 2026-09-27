@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import flatpickr from 'flatpickr'
 import 'flatpickr/dist/flatpickr.min.css'
 import { Mandarin } from 'flatpickr/dist/l10n/zh.js'
+import { beneficiaryText as joinBeneficiaries } from '../lib/persons.js'
 import { fmtDateTime, relativeTime, toAmountText } from '../lib/util.js'
 
 const props = defineProps({
@@ -14,6 +15,10 @@ const props = defineProps({
   active: { type: Boolean, default: false },
   /* 現在時間（由 App.vue 每半分鐘更新一次，用來算「幾分鐘前」） */
   now: { type: Number, default: 0 },
+  /* 這一筆還沒填完（依「匯出前先檢查」的規則）→ 外框變黃 */
+  needs: { type: Boolean, default: false },
+  /* 付款時間右邊要不要多一顆「現在」按鈕（設定頁可以開） */
+  nowButton: { type: Boolean, default: false },
 })
 const emit = defineEmits([
   'view',
@@ -142,6 +147,17 @@ const finishTimeStep = () => {
   step.value = 'idle'
 }
 
+/*
+ * 「現在」按鈕：直接把付款時間填成現在（例：現在 2026-09-28 12:46 → 2026-09-28 12:46）。
+ * 填完也標成「使用者自己填的」，之後重新辨識不會被蓋掉。
+ */
+function fillNow() {
+  if (locked.value) return
+  r.value.paidAtText = fmtDateTime(Date.now())
+  r.value.paidAtManual = true
+  step.value = 'idle'
+}
+
 onMounted(() => {
   if (!dateAnchorEl.value) return
   /* 只把合法的日期交給 flatpickr（壞值會讓它丟錯，整張卡片就壞了） */
@@ -207,6 +223,11 @@ const statusKind = (rec) => {
 /* 失敗或已跳過的，可以點標籤重新辨識（鎖定的不行） */
 const canRetry = (rec) => !rec.locked && (rec.ocrStatus === 'error' || rec.ocrStatus === 'skipped')
 
+/*
+ * 受益人的名字，用「.」接起來（Vincent.Ben.Ken）——鎖定時要用純文字顯示。
+ */
+const beneficiaryText = computed(() => joinBeneficiaries(r.value, props.persons))
+
 /* 人物清單裡找不到的付錢人／受益人（自動補不回來的那種） */
 const payerGone = computed(
   () => !!r.value.payerId && !props.persons.some((p) => p.id === r.value.payerId),
@@ -248,7 +269,7 @@ function toggleBeneficiary(id) {
 </script>
 
 <template>
-  <article class="rec" :class="{ on: active, locked }" @click="selectSelf">
+  <article class="rec" :class="{ on: active, locked, needs: needs && !locked }" @click="selectSelf">
     <div class="thumbs">
       <button
         v-if="r.url"
@@ -395,7 +416,7 @@ function toggleBeneficiary(id) {
 
         <label class="field">
           <span class="lbl">付款時間</span>
-          <span class="time-slot">
+          <span class="time-slot" :class="{ 'has-now': nowButton && step === 'idle' }">
             <input
               v-if="step === 'idle'"
               ref="dateInputEl"
@@ -440,6 +461,18 @@ function toggleBeneficiary(id) {
                 <rect x="3" y="5" width="18" height="16" rx="2" />
                 <path d="M3 10h18M8 3v4M16 3v4" />
               </svg>
+            </button>
+            <!-- 「現在」：直接把付款時間填成現在（設定頁可以關掉，預設是開的） -->
+            <button
+              v-if="step === 'idle' && nowButton"
+              type="button"
+              class="now-btn"
+              :disabled="locked"
+              title="填成現在的時間"
+              aria-label="填成現在的時間"
+              @click="fillNow"
+            >
+              現在
             </button>
             <!-- flatpickr 的掛載點（看不見，只負責跳日曆） -->
             <input ref="dateAnchorEl" class="sr-only" type="text" tabindex="-1" aria-hidden="true" />
@@ -498,12 +531,15 @@ function toggleBeneficiary(id) {
 
       <div class="field">
         <span class="lbl">受益人（可多選）</span>
-        <div v-if="persons.length" class="chips">
+        <!-- 鎖定之後不能再改，改成純文字（Vincent.Ben.Ken），不要留一排按不了的按鈕 -->
+        <p v-if="locked" class="plain-value" :class="{ empty: !beneficiaryText }">
+          {{ beneficiaryText || '（沒有選受益人）' }}
+        </p>
+        <div v-else-if="persons.length" class="chips">
           <button
             type="button"
             class="chip chip-all"
             :class="{ on: allSelected }"
-            :disabled="locked"
             @click="toggleAllBeneficiaries"
           >
             {{ allSelected ? '取消全選' : '全選' }}
@@ -514,7 +550,6 @@ function toggleBeneficiary(id) {
             type="button"
             class="chip"
             :class="{ on: r.beneficiaryIds.includes(p.id) }"
-            :disabled="locked"
             @click="toggleBeneficiary(p.id)"
           >
             {{ p.name }}
@@ -613,6 +648,24 @@ function toggleBeneficiary(id) {
 .rec.on {
   border-color: var(--pick);
   box-shadow: 0 0 0 3px var(--pick-soft), var(--shadow);
+}
+
+/*
+ * 還沒填完（依「匯出前先檢查」的規則）：外框變黃。
+ * 放在 .rec.on 後面、.rec.locked 前面——鎖定的人本來就不用再填，所以鎖定色優先。
+ * 顏色可以在「設定 → 顏色 → 還沒填完的外框顏色」改（--need）。
+ */
+.rec.needs {
+  border-color: var(--need);
+}
+
+.rec.needs:hover {
+  border-color: var(--need-dark);
+}
+
+.rec.needs.on {
+  border-color: var(--need);
+  box-shadow: 0 0 0 3px var(--need-soft), var(--shadow);
 }
 
 /*
@@ -977,6 +1030,41 @@ function toggleBeneficiary(id) {
   color: var(--accent);
 }
 
+/*
+ * 「現在」按鈕：排在日曆按鈕左邊（日曆固定在 right: 5px、寬 30px，所以這裡從 right: 40px 起算）。
+ * 有它的時候輸入框右邊要多留一點空間，字才不會被壓在按鈕下面。
+ */
+.now-btn {
+  position: absolute;
+  top: 50%;
+  right: 40px;
+  transform: translateY(-50%);
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.now-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.now-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 有「現在」按鈕時，輸入框要多讓出 40px */
+.time-slot.has-now .time-input {
+  padding-right: 80px;
+}
+
 /* 日曆置中顯示時，背景加一層薄薄的遮罩讓它更好點 */
 .flatpickr-calendar {
   z-index: 60;
@@ -987,6 +1075,23 @@ function toggleBeneficiary(id) {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+/* 鎖定時受益人的純文字（Vincent.Ben.Ken）：跟輸入框一樣高的灰字，不能按 */
+.plain-value {
+  margin: 0;
+  padding: 7px 11px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.plain-value.empty {
+  color: var(--muted);
 }
 
 .chip {
