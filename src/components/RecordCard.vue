@@ -66,12 +66,12 @@ function onAmountInput(event) {
   r.value.amount = clean
 }
 
-/* 手動新增的記錄補圖片用 */
+/* 手動新增的記錄補圖片用（可以一次選多張） */
 const pickEl = ref(null)
 function onPickFile(event) {
-  const file = event.target.files?.[0]
+  const files = [...(event.target.files ?? [])]
   event.target.value = ''
-  if (file) emit('attach', props.record, file)
+  if (files.length) emit('attach', props.record, files)
 }
 
 /*
@@ -262,13 +262,13 @@ function toggleBeneficiary(id) {
       <button v-if="r.url" type="button" class="thumb-btn" title="點圖放大" @click="emit('view', r)">
         <img class="thumb" :src="r.url" :alt="r.fileName" />
       </button>
-      <!-- 沒有圖片時，點這格就能補一張圖上去（鎖定的不行） -->
+      <!-- 沒有圖片時，點這格就能補圖上去（可以一次選多張，鎖定的不行） -->
       <button
         v-else
         type="button"
         class="thumb thumb-empty"
         :disabled="locked"
-        :title="locked ? '已鎖定，要補圖片請先解除' : '點一下上傳這筆的圖片'"
+        :title="locked ? '已鎖定，要補圖片請先解除' : '點一下上傳這筆的圖片（可以一次選多張）'"
         @click="pickEl.click()"
       >
         無圖
@@ -278,6 +278,7 @@ function toggleBeneficiary(id) {
         class="sr-only"
         type="file"
         accept="image/*"
+        multiple
         @change="onPickFile"
       />
     </div>

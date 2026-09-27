@@ -45,6 +45,8 @@ import {
   restoreMissingPersons,
 } from '../src/lib/persons.js'
 import { md5Hex } from '../src/lib/md5.js'
+import { datePart, imageExportName, uniqueExportName } from '../src/lib/imageExport.js'
+import { crc32, zipStore } from '../src/lib/zip.js'
 import { fromBackup, mergeRecords, remapRecords, resolvePersons, toBackup } from '../src/lib/backup.js'
 import {
   DEFAULT_EXPORT_RULES,
@@ -1113,6 +1115,67 @@ assert.deepEqual(commaName.names, ['Ben Ken'])
 assert.equal(buildShareQuery({}), '')
 assert.equal(buildShareQuery({ currency: 'CN' }), '')
 assert.equal(buildShareQuery({ currency: 'cny' }), 'currency=CNY')
+
+/* ---------- 匯出圖片的檔名 ---------- */
+assert.equal(
+  imageExportName({
+    index: 1,
+    payer: 'Vincent',
+    amount: '45',
+    currency: 'MOP',
+    paidAtText: '2026-09-06 13:47',
+    part: 1,
+    type: 'image/jpeg',
+  }),
+  '001-Vincent-45MOP-2026-09-06.jpg',
+)
+/* 同一筆的第 2 張以後加 -2、-3；沒有型別就用原本檔名的副檔名 */
+assert.equal(
+  imageExportName({ index: 12, payer: 'Ben', amount: '100', currency: '', paidAtText: '', part: 3, type: '', originalName: 'IMG_2.PNG' }),
+  '012-Ben-100-3.png',
+)
+/* 沒填的部分自動跳過、不合法的字元去掉 */
+assert.equal(imageExportName({ index: 7, payer: '', amount: '', currency: '', paidAtText: '', part: 1, type: 'image/png' }), '007.png')
+assert.equal(
+  imageExportName({ index: 2, payer: 'A/B:C', amount: '5', currency: 'CNY', paidAtText: '2026/1/9', part: 1, type: 'image/jpeg' }),
+  '002-ABC-5CNY-2026-01-09.jpg',
+)
+/* 付款時間的格式：斜線、單數字都收；看不出日期就留空 */
+assert.equal(datePart('2026/1/9'), '2026-01-09')
+assert.equal(datePart('付款時間：2026.12.31 23:59'), '2026-12-31')
+assert.equal(datePart('不知道'), '')
+/* 撞名要加 ~2 */
+const used = new Set()
+assert.equal(uniqueExportName('001-a.jpg', used), '001-a.jpg')
+assert.equal(uniqueExportName('001-a.jpg', used), '001-a~2.jpg')
+assert.equal(uniqueExportName('001-a.jpg', used), '001-a~3.jpg')
+
+/* ---------- zip：只用儲存不壓縮，但要能被一般解壓縮程式讀出來 ---------- */
+assert.equal(crc32(new TextEncoder().encode('123456789')), 0xcbf43926, 'CRC-32 的標準測試向量')
+{
+  const a = new TextEncoder().encode('hello 圖片')
+  const b = new Uint8Array([0, 1, 2, 255])
+  const blob = zipStore(
+    [
+      { name: 'a.txt', bytes: a },
+      { name: 'b.bin', bytes: b },
+    ],
+    new Date('2026-09-26T10:00:00'),
+  )
+  const bytes = new Uint8Array(await blob.arrayBuffer())
+  const view = new DataView(bytes.buffer)
+  const nA = new TextEncoder().encode('a.txt').length
+  const nB = new TextEncoder().encode('b.bin').length
+  assert.equal(view.getUint32(0, true), 0x04034b50, '第一個 local file header')
+  assert.equal(bytes.length, 30 + nA + a.length + (30 + nB + b.length) + (46 + nA) + (46 + nB) + 22)
+  /* 中央目錄與結束記錄的簽章 */
+  const centralAt = 30 + nA + a.length + 30 + nB + b.length
+  assert.equal(view.getUint32(centralAt, true), 0x02014b50, 'central directory 簽章')
+  assert.equal(view.getUint32(bytes.length - 22, true), 0x06054b50, 'end of central directory 簽章')
+  assert.equal(view.getUint16(bytes.length - 12, true), 2, '兩筆檔案')
+  /* 內容是原封不動搬進去的 */
+  assert.deepEqual(bytes.slice(30 + nA, 30 + nA + a.length), a)
+}
 
 /* ---------- PWA：離線可用需要的檔案 ---------- */
 const root = new URL('..', import.meta.url)

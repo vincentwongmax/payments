@@ -38,6 +38,8 @@ import {
 } from './lib/validate.js'
 import { missingPersonIds, personNameSnapshot, recordsUsingPerson, restoreMissingPersons } from './lib/persons.js'
 import { buildShareQuery, fmtDateTime, labelBySource, parseShareParams, safeFileNamePart, searchFromText, shareLinkKey, toAmountText, uid } from './lib/util.js'
+import { imageExportName, uniqueExportName } from './lib/imageExport.js'
+import { zipStore } from './lib/zip.js'
 
 /* ---------- 人物 ---------- */
 const persons = ref([])
@@ -1741,62 +1743,106 @@ function applyDefaultCurrency() {
 }
 
 /**
- * 手動新增的記錄（沒有圖片）點「無圖」就能補一張圖上去。
- * 標題維持使用者原本看到的「手動新增N」；補完圖會重新跑辨識。
+ * 手動新增的記錄（沒有圖片）點「無圖」就能補圖片上去，**可以一次選多張**：
+ * 依圖片本身的時間排序（跟批次上傳同一個規則），最早的那張當主圖（拿去辨識金額與時間），
+ * 其餘的變成這一筆的附加圖片。標題維持使用者原本看到的「手動新增N」。
  */
-async function attachImage(record, file) {
+async function attachImage(record, input) {
+  const files = (Array.isArray(input) ? input : [input]).filter(Boolean)
   try {
     /* 鎖定的記錄不能補圖（要換圖請先解除鎖定） */
     if (record.locked) {
       actionNotice.value = `「${record.fileName}」已鎖定，要補圖片請先解除鎖定。`
       return
     }
-    let picked = file
-    if (await isHeic(picked)) {
+    if (!files.length) return
+
+    const notices = []
+    const ready = []
+    for (const file of files) {
       try {
-        picked = await heicToJpeg(picked)
-      } catch {
-        /* 這個瀏覽器解不開 HEIC，原檔留著讓下面判斷並提示 */
+        let picked = file
+        if (await isHeic(picked)) {
+          try {
+            picked = await heicToJpeg(picked)
+          } catch {
+            /* 這個瀏覽器解不開 HEIC，原檔留著讓下面判斷並提示 */
+          }
+        }
+        if (!(await canDecode(picked))) {
+          notices.push(`${file.name}：這個瀏覽器讀不到`)
+          continue
+        }
+        const hash = await hashFile(picked)
+        /* 同一張圖已經用過就擋下來（別筆記錄或這筆自己的圖片都算），免得同一筆帳記兩次 */
+        const twin = findImageOwner(records.value, hash)
+        if (twin) {
+          notices.push(
+            twin.record.id === record.id
+              ? `${file.name}：這筆已經有同一張圖了`
+              : `${file.name}：已經用在「${twin.record.fileName}」（${seqLabels.value.get(twin.record.id) ?? ''}）`,
+          )
+          continue
+        }
+        const time = await readImageTime(picked)
+        ready.push({ picked, hash, time, fileName: file.name })
+      } catch (e) {
+        notices.push(`${file.name}：${e?.message ?? e}`)
       }
     }
-    if (!(await canDecode(picked))) {
-      actionNotice.value = `這個瀏覽器讀不到「${file.name}」，請換一張，或改用截圖。`
+
+    /* 依圖片本身的時間排序：最早的那張當主圖，其餘照時間排成附加圖片 */
+    ready.sort((a, b) => (a.time.ms || 0) - (b.time.ms || 0))
+    if (!ready.length) {
+      actionNotice.value = notices.join('；') || '這些圖片都無法使用。'
       return
     }
 
-    const hash = await hashFile(picked)
-    /* 同一張圖已經用過就擋下來（別筆記錄的主要圖片或附加圖片都算），免得同一筆帳記兩次 */
-    const twin = findImageOwner(records.value, hash)
-    if (twin) {
-      actionNotice.value = `這張圖已經用在「${twin.record.fileName}」（${
-        seqLabels.value.get(twin.record.id) ?? ''
-      }），沒有重複加上去。`
-      return
+    const [main, ...extra] = ready
+    setMainImage(record, main)
+    if (extra.length) {
+      record.extraImages = [
+        ...(record.extraImages ?? []),
+        ...extra.map((item) => ({
+          id: uid(),
+          file: item.picked,
+          url: URL.createObjectURL(item.picked),
+          fileName: item.fileName,
+          hash: item.hash,
+          fileTime: item.time.ms,
+          fileTimeSource: item.time.source,
+        })),
+      ]
     }
-
-    const time = await readImageTime(picked)
-    /*
-     * 使用者自己填過的金額與時間不要被辨識結果蓋掉
-     * （手動新增時自動帶入的付款時間不算「自己填的」，所以還是讓辨識結果更新它）
-     */
-    if (record.amount !== '') record.currencyLocked = true
-
-    revoke(record.url)
-    record.file = picked
-    record.hash = hash
-    if (!record.fileTime) {
-      record.fileTime = time.ms
-      record.fileTimeSource = time.source
-    }
-    record.url = URL.createObjectURL(picked)
-    record.ocrStatus = 'pending'
-    record.ocrProgress = 0
-    record.ocrError = ''
-    actionNotice.value = ''
-    runOcr()
+    const bits = [`已補上 ${ready.length} 張圖片`]
+    if (extra.length) bits.push(`${extra.length} 張放在附加圖片（主圖是時間最早的那張）`)
+    if (notices.length) bits.push(notices.join('；'))
+    actionNotice.value = bits.join('，')
   } catch (e) {
     actionNotice.value = `加圖片失敗：${e?.message ?? e}`
   }
+}
+
+/** 把一張已經驗證好的圖片設成主圖（卡片縮圖）並重新辨識 */
+function setMainImage(record, { picked, hash, time }) {
+  /*
+   * 使用者自己填過的金額與時間不要被辨識結果蓋掉
+   * （手動新增時自動帶入的付款時間不算「自己填的」，所以還是讓辨識結果更新它）
+   */
+  if (record.amount !== '') record.currencyLocked = true
+
+  revoke(record.url)
+  record.file = picked
+  record.hash = hash
+  if (!record.fileTime) {
+    record.fileTime = time.ms
+    record.fileTimeSource = time.source
+  }
+  record.url = URL.createObjectURL(picked)
+  record.ocrStatus = 'pending'
+  record.ocrProgress = 0
+  record.ocrError = ''
+  runOcr()
 }
 
 async function removeRecord(record) {
@@ -2010,11 +2056,11 @@ function pickPlainImage(record) {
 }
 
 function onPlainPick(event) {
-  const file = event.target.files?.[0]
+  const files = [...(event.target.files ?? [])]
   event.target.value = ''
   const record = plainPickTarget
   plainPickTarget = null
-  if (file && record) attachImage(record, file)
+  if (files.length && record) attachImage(record, files)
 }
 
 /* 在看圖頁後期補上圖片（可以一次選多張） */
@@ -2076,7 +2122,6 @@ const zoomBy = (factor) => {
   zoom.value = Math.min(6, Math.max(0.25, Number((zoom.value * factor).toFixed(3))))
 }
 const resetZoom = () => (zoom.value = 1)
-
 /* 手機版（RWD）：點圖片就等於按關閉；桌機版不變，點圖不會關 */
 const onViewerImageClick = () => {
   if (window.matchMedia?.('(max-width: 560px)').matches) viewerEl.value?.close()
@@ -2369,6 +2414,157 @@ async function importFiles(files) {
   if (total.cancelled) bits.push(`${total.cancelled} 個檔案取消`)
   if (total.failed.length) bits.push(`失敗：${total.failed.join('、')}`)
   backupNotice.value = bits.join('，')
+}
+
+/* ---------- 匯出圖片（原圖或壓縮後，一個檔一張圖、不打包） ---------- */
+const imagesBusy = ref(false)
+
+const payMb = (bytes) => `${(bytes / 1048576).toFixed(1)} MB`
+
+/** 付錢人的名字（找不到人就用記錄裡存的名字） */
+const payerName = (record) =>
+  persons.value.find((p) => p.id === record.payerId)?.name ?? personNameSnapshot(record, persons.value) ?? ''
+
+/** 這一筆在列表裡是第幾個（1 開始，檔名用） */
+const recordIndexOf = (record) => records.value.findIndex((r) => r.id === record.id) + 1
+
+/** 收集要匯出的圖片：主圖＋附加圖片，回傳 [{ name, blob }] */
+async function collectExportImages(compress) {
+  const used = new Set()
+  const out = []
+  let skippedRecords = 0
+  let failed = 0
+
+  for (const record of records.value) {
+    const main = record.file ?? null
+    const extras = (record.extraImages ?? []).map((img) => img.file).filter(Boolean)
+    if (!main && !extras.length) {
+      skippedRecords++
+      continue
+    }
+    const pics = [
+      ...(main ? [{ file: main, part: 1, originalName: record.fileName ?? main.name }] : []),
+      ...extras.map((file, i) => ({ file, part: main ? i + 2 : i + 1, originalName: file?.name ?? '' })),
+    ]
+
+    for (const pic of pics) {
+      try {
+        let blob = pic.file
+        if (compress) {
+          /* 跟備份匯出用同一組參數：短邊至少 700px、目標壓到原本的 1/3 以下 */
+          blob = (await compressImage(pic.file, { minShortSide: 700, targetRatio: 3 })) ?? pic.file
+        }
+        const name = uniqueExportName(
+          imageExportName({
+            index: recordIndexOf(record),
+            payer: payerName(record),
+            amount: record.amount,
+            currency: record.currency,
+            paidAtText: record.paidAtText,
+            part: pic.part,
+            type: blob.type,
+            originalName: pic.originalName,
+          }),
+          used,
+        )
+        out.push({ name, blob })
+      } catch {
+        failed++
+      }
+    }
+  }
+  return { out, skippedRecords, failed }
+}
+
+/** 單檔下載（zip 最後手段用） */
+function downloadBlob(blob, fileName) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = fileName
+  a.rel = 'noopener'
+  document.body.append(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 10000)
+}
+
+/**
+ * 把一批圖片交給使用者（不用 zip）：
+ *   1. 手機／平板 → 系統分享面板（iOS 可以一次「儲存 N 張影像」到照片）
+ *   2. 電腦 → 選一個資料夾直接寫檔（File System Access API）
+ *   3. 兩個都不支援 → 才打包成一個 zip 單檔下載
+ */
+async function deliverImages(entries, kind) {
+  const files = entries.map((e) => new File([e.blob], e.name, { type: e.blob.type || 'image/jpeg' }))
+  const total = files.reduce((sum, f) => sum + f.size, 0)
+
+  if (useShareSheet() && typeof navigator.canShare === 'function' && navigator.canShare({ files })) {
+    try {
+      await navigator.share({ files, title: `付款記錄圖片（${files.length} 張）` })
+      return `已開啟分享面板：${files.length} 張${kind}圖（${payMb(total)}）`
+    } catch (e) {
+      if (e?.name === 'AbortError') return '已取消'
+      /* 分享面板失敗就往下試別的方法 */
+    }
+  }
+
+  if (typeof window.showDirectoryPicker === 'function') {
+    try {
+      const dir = await window.showDirectoryPicker({ id: 'payments-images', mode: 'readwrite' })
+      for (const item of entries) {
+        const handle = await dir.getFileHandle(item.name, { create: true })
+        const writable = await handle.createWritable()
+        await writable.write(item.blob)
+        await writable.close()
+      }
+      return `已寫進資料夾「${dir.name}」：${entries.length} 張${kind}圖（${payMb(total)}）`
+    } catch (e) {
+      if (e?.name === 'AbortError') return '已取消'
+      /* 資料夾寫檔失敗就往下試 */
+    }
+  }
+
+  const zip = zipStore(
+    await Promise.all(
+      entries.map(async (item) => ({ name: item.name, bytes: new Uint8Array(await item.blob.arrayBuffer()) })),
+    ),
+  )
+  const zipName = `付款記錄-圖片-${kind}-${stamp()}.zip`
+  downloadBlob(zip, zipName)
+  return `這個瀏覽器不支援分享面板或資料夾寫檔，已改成打包成一個 zip：${zipName}`
+}
+
+/** 匯出圖片：compress = true 時用壓縮後的版本 */
+async function exportImages(compress) {
+  if (imagesBusy.value) return
+  if (!records.value.length) {
+    warn('還沒有記錄', '目前沒有任何付款記錄。')
+    return
+  }
+  if (!records.value.some((r) => r.file || (r.extraImages ?? []).length)) {
+    warn('沒有圖片可以匯出', '目前的記錄都沒有圖片（手動新增的記錄可以沒有圖片）。')
+    return
+  }
+
+  imagesBusy.value = true
+  backupNotice.value = compress ? '正在壓縮圖片，請稍等…' : '正在準備原圖…'
+  try {
+    const { out, skippedRecords, failed } = await collectExportImages(compress)
+    if (!out.length) {
+      backupNotice.value = '沒有圖片可以匯出。'
+      return
+    }
+    const result = await deliverImages(out, compress ? '壓縮' : '原')
+    const bits = [result]
+    if (skippedRecords) bits.push(`有 ${skippedRecords} 筆沒有圖片，已跳過`)
+    if (failed) bits.push(`有 ${failed} 張讀不到，已跳過`)
+    backupNotice.value = bits.join('；')
+  } catch (e) {
+    backupNotice.value = `匯出圖片失敗：${e?.message ?? e}`
+  } finally {
+    imagesBusy.value = false
+  }
 }
 
 /* ---------- QR CODE 傳輸（decimen 光學傳輸，頁面在 public/decimen/） ---------- */
@@ -3154,6 +3350,41 @@ onUnmounted(() => {
         </div>
       </section>
 
+      <!-- 匯出圖片：原圖或壓縮後，一張圖一個檔（不打包成 zip） -->
+      <section class="card">
+        <div class="card-head card-head-inline">
+          <h2>匯出圖片</h2>
+        </div>
+        <p class="hint">
+          每一筆記錄的圖片（<strong>主圖＋附加圖片</strong>）都匯出成獨立檔案，檔名是
+          <code>序號-付錢人-金額-幣別-付款時間</code>（例：<code>001-Vincent-45-MOP-2026-09-06.jpg</code>），
+          同一筆的第 2 張以後加 <code>-2</code>、<code>-3</code>。沒有圖片的記錄會跳過。
+        </p>
+        <p class="hint">
+          <strong>不會打包成 zip</strong>：手機／平板按下去會開系統的分享面板（iOS 可以一次
+          「儲存 N 張影像」到照片），電腦會請你選一個資料夾直接寫檔；兩個都不支援的瀏覽器才會
+          打包成一個 zip 下載。「壓縮圖」跟備份匯出用同一組設定（短邊至少 700px、JPEG、目標壓到原本的 1/3）。
+        </p>
+        <div class="head-actions">
+          <button
+            class="btn"
+            :class="{ 'is-busy': imagesBusy }"
+            :aria-disabled="imagesBusy"
+            @click="exportImages(false)"
+          >
+            匯出原圖
+          </button>
+          <button
+            class="btn btn-primary"
+            :class="{ 'is-busy': imagesBusy }"
+            :aria-disabled="imagesBusy"
+            @click="exportImages(true)"
+          >
+            匯出壓縮圖
+          </button>
+        </div>
+      </section>
+
       <!-- QR CODE 傳輸：用螢幕與鏡頭把完整備份傳給另一台裝置（decimen 光學傳輸） -->
       <section class="card">
         <div class="card-head card-head-inline">
@@ -3556,12 +3787,13 @@ onUnmounted(() => {
       <!-- 普通文字模式：只有文字與一個「圖片」按鈕，點欄位可以直接改 -->
       <div v-else-if="plainMode" class="plain-wrap">
         <p class="hint plain-tip">點欄位就可以直接修改（付錢人、受益人也可以選）。</p>
-        <!-- 沒有圖片的那一列按「無」補圖用（跟卡片上的「無圖」一樣） -->
+        <!-- 沒有圖片的那一列按「無」補圖用（跟卡片上的「無圖」一樣，可以一次選多張） -->
         <input
           ref="plainPickEl"
           class="sr-only"
           type="file"
           accept="image/*"
+          multiple
           @change="onPlainPick"
         />
         <table class="plain-table">
