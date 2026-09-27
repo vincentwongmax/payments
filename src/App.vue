@@ -34,7 +34,7 @@ import {
   fieldName,
   findIncomplete,
   incompleteMessage,
-  missingFields,
+  missingFieldKeys,
   normalizeRules,
 } from './lib/validate.js'
 import { missingPersonIds, personNameSnapshot, recordsUsingPerson, restoreMissingPersons } from './lib/persons.js'
@@ -826,19 +826,19 @@ function togglePlainMode() {
     : '已切換回正常模式，按「返回」就會看到'
 }
 
-/* ---------- 顏色：鎖定框線、選取外框與「還沒填完」的外框可以自己選 ---------- */
+/* ---------- 顏色：鎖定框線、選取外框與「還沒填完」的顏色可以自己選 ---------- */
 const COLOR_PRESETS = [
   { hex: '#e07297', name: '玫瑰粉' },
   { hex: '#2f6f4e', name: '森林綠' },
   { hex: '#2f6fb0', name: '海藍' },
   { hex: '#7a52c7', name: '紫' },
-  { hex: '#c8860a', name: '琥珀' },
+  { hex: '#f2e600', name: '螢光黃' },
   { hex: '#a5342c', name: '磚紅' },
   { hex: '#4a4f46', name: '墨灰' },
 ]
 const DEFAULT_LOCK_COLOR = '#e07297'
 const DEFAULT_PICK_COLOR = '#2f6f4e'
-const DEFAULT_NEED_COLOR = '#c8860a'
+const DEFAULT_NEED_COLOR = '#f2e600'
 
 const lockColor = ref(DEFAULT_LOCK_COLOR)
 const pickColor = ref(DEFAULT_PICK_COLOR)
@@ -848,12 +848,14 @@ const lockDraft = ref(DEFAULT_LOCK_COLOR)
 const pickDraft = ref(DEFAULT_PICK_COLOR)
 const needDraft = ref(DEFAULT_NEED_COLOR)
 const badColor = ref('')
+/* 設定頁的選盤一次只改一個項目（三個功能共用同一組 7 個色球與色碼框） */
+const colorTab = ref('lock')
 
 /** 三組顏色（變數名稱、ref、預設值）集中在這裡，設定頁與套用邏輯都吃這一份 */
 const COLOR_SLOTS = [
   {
     key: 'lock',
-    label: '鎖定框線顏色',
+    label: '鎖定框線',
     hint: '鎖定那一筆時的外框與「已鎖定」標記',
     color: lockColor,
     draft: lockDraft,
@@ -865,7 +867,7 @@ const COLOR_SLOTS = [
   },
   {
     key: 'pick',
-    label: '選取顏色',
+    label: '選取外框',
     hint: '點到某一筆時亮起來的外框（含淡色光暈）',
     color: pickColor,
     draft: pickDraft,
@@ -876,16 +878,19 @@ const COLOR_SLOTS = [
   },
   {
     key: 'need',
-    label: '還沒填完的外框顏色',
-    hint: '依「匯出前先檢查」的規則，欄位有缺的記錄會用這個顏色',
+    label: '還沒填完',
+    hint: '依「匯出前先檢查」的規則，欄位有缺的記錄會用這個顏色（只標缺的那幾個欄位）',
     color: needColor,
     draft: needDraft,
     preset: DEFAULT_NEED_COLOR,
     base: '--need',
-    dark: { name: '--need-dark', target: '#000000', ratio: 0.22 },
-    soft: { name: '--need-soft', target: '#ffffff', ratio: 0.88 },
+    dark: { name: '--need-dark', target: '#000000', ratio: 0.3 },
+    soft: { name: '--need-soft', target: '#ffffff', ratio: 0.86 },
   },
 ]
+
+/** 目前選盤在改哪一組顏色 */
+const activeSlot = computed(() => COLOR_SLOTS.find((s) => s.key === colorTab.value) ?? COLOR_SLOTS[0])
 
 /** `#rgb`／`#rrggbb`（# 可以省略）才收，其他一律當成沒填 */
 function normalizeHex(value) {
@@ -935,16 +940,22 @@ watch(
 )
 
 /** 輸入框套用：合法就直接用，不合法就提示並還原成目前用的顏色 */
-function applyColorDraft(which) {
-  const slot = COLOR_SLOTS.find((s) => s.key === which) ?? COLOR_SLOTS[0]
+function applyColorDraft() {
+  const slot = activeSlot.value
   const hex = normalizeHex(slot.draft.value)
   if (!hex) {
-    badColor.value = which
+    badColor.value = slot.key
     slot.draft.value = slot.color.value
     return
   }
   badColor.value = ''
   slot.color.value = hex
+}
+
+/** 選盤上點色球：套用到目前選的那一組 */
+function pickColorFor(hex) {
+  activeSlot.value.color.value = hex
+  badColor.value = ''
 }
 
 /**
@@ -1128,7 +1139,7 @@ async function warnIncomplete(bad) {
 const pauseOcr = ref(false)
 
 /* ---------- 付款時間的「現在」按鈕 ---------- */
-const nowButton = ref(false)
+/* 已經做成日曆面板裡的一顆固定按鈕（見 RecordCard 的 addNowButton），不用設定 */
 
 /** 勾選「暫停圖片 OCR」時，把還在排隊的圖片一起停下來 */
 function onPauseOcrChange() {
@@ -1144,19 +1155,23 @@ async function exportAllowed() {
 }
 
 /*
- * 還沒填完的記錄：卡片外框會變黃（顏色可在「設定 → 顏色」改）。
+ * 還沒填完的記錄：卡片外框＋缺的那幾個欄位會變色（顏色可在「設定 → 顏色」改）。
  * 判斷規則跟匯出前的檢查完全同一套，也尊重「這幾筆不用檢查」的設定。
  * 關掉「匯出前先檢查」時就不標（不然兩邊說法會不一致）。
  */
-const needIds = computed(() => {
-  if (!checkBeforeExport.value) return new Set()
-  const ids = new Set()
+const needFields = computed(() => {
+  const map = new Map()
+  if (!checkBeforeExport.value) return map
   for (const r of records.value) {
     if (r.checkExport === false) continue
-    if (missingFields(r, exportRules.value).length) ids.add(r.id)
+    const missing = missingFieldKeys(r, exportRules.value)
+    if (missing.length) map.set(r.id, missing)
   }
-  return ids
+  return map
 })
+
+/* 有沒有任何一筆沒填完（給卡片判斷要不要標外框） */
+const needIds = computed(() => new Set(needFields.value.keys()))
 
 /* ---------- 匯出文字（只文字、不含圖片） ---------- */
 const recordsText = () => recordsToText(records.value, persons.value)
@@ -3009,8 +3024,6 @@ async function persist() {
     await put('settings', { id: 'needColor', value: needColor.value })
     /* 暫停圖片 OCR：勾選期間上傳的圖不辨識（直接標成已跳過） */
     await put('settings', { id: 'pauseOcr', value: pauseOcr.value })
-    /* 付款時間右邊要不要有「現在」按鈕 */
-    await put('settings', { id: 'nowButton', value: nowButton.value })
     storageError.value = ''
   } catch (e) {
     storageError.value = `資料無法存到本機：${e?.message ?? e}`
@@ -3031,7 +3044,6 @@ watch(
     pickColor,
     needColor,
     pauseOcr,
-    nowButton,
   ],
   () => {
     clearTimeout(saveTimer)
@@ -3175,9 +3187,8 @@ onMounted(async () => {
     lockColor.value = normalizeHex(settings.find((s) => s.id === 'lockColor')?.value) || DEFAULT_LOCK_COLOR
     pickColor.value = normalizeHex(settings.find((s) => s.id === 'pickColor')?.value) || DEFAULT_PICK_COLOR
     needColor.value = normalizeHex(settings.find((s) => s.id === 'needColor')?.value) || DEFAULT_NEED_COLOR
-    /* 暫停圖片 OCR 與付款時間的「現在」按鈕（預設都是關的） */
+    /* 暫停圖片 OCR（預設關閉） */
     pauseOcr.value = settings.find((s) => s.id === 'pauseOcr')?.value === true
-    nowButton.value = settings.find((s) => s.id === 'nowButton')?.value === true
     const links = settings.find((s) => s.id === 'appliedShareLinks')?.value
     appliedLinks = Array.isArray(links) ? links : []
     /* 手動新增的編號：照建立順序重排一次（刪過的話號碼會補回來） */
@@ -3389,15 +3400,9 @@ onUnmounted(() => {
           勾選之後上傳的圖片<strong>完全不會執行辨識</strong>，狀態直接標成「已跳過辨識」
           （金額與時間自己填）。已經在排隊的也會一起停下來，要跑再自己按那一筆的重新辨識。
         </p>
-
-        <label class="checkbox">
-          <input v-model="nowButton" type="checkbox" />
-          付款時間右邊顯示「現在」按鈕
-        </label>
         <p class="hint">
-          打開之後，每一筆的付款時間欄位右邊（日曆圖示的左邊）會多一顆「<strong>現在</strong>」，
-          點一下就把付款時間填成現在（例：<code>2026-09-28 12:46</code>），不用自己打。
-          填完會算「你自己填的」，之後重新辨識不會被蓋掉。
+          付款時間的日曆裡固定有一顆「<strong>現在</strong>」按鈕（面板最下面一排），
+          點一下就填成現在（例：<code>2026-09-28 12:46</code>），填完算「你自己填的」，重新辨識不會被蓋掉。
         </p>
       </section>
 
@@ -3421,53 +3426,68 @@ onUnmounted(() => {
         <p class="hint">目前：{{ plainMode ? '普通文字模式' : '正常模式' }}</p>
       </section>
 
-      <!-- 顏色：鎖定框線與選取外框（7 個內建色 ＋ 自己輸入 HTML 色碼） -->
+      <!-- 顏色：三種用途共用一個選盤（7 個內建色 ＋ 自己輸入 HTML 色碼） -->
       <section class="card">
         <div class="card-head card-head-inline">
           <h2>顏色</h2>
         </div>
         <p class="hint">
-          「鎖定框線」是鎖定那一筆記錄時的外框與標記；「選取顏色」是你點某一筆時亮起來的外框
-          （正常模式的卡片與普通文字模式的整列都是）；「還沒填完的外框」是依「匯出前先檢查」的規則，
-          欄位有缺的那幾筆會用這個顏色提醒你。除了下面七個內建色，也可以直接輸入自己的
-          HTML 色碼，例如 <code>#e07297</code>。
+          先選下面<strong>要改哪一種</strong>，再用同一個色盤挑顏色（或自己輸入 HTML 色碼）。
+          「鎖定框線」是鎖定那一筆時的外框與標記；「選取外框」是你點某一筆時亮起來的外框；
+          「還沒填完」是依「匯出前先檢查」的規則，欄位有缺的那幾筆要用的顏色。
         </p>
 
-        <div v-for="slot in COLOR_SLOTS" :key="slot.key" class="color-row">
-          <span class="lbl">{{ slot.label }}</span>
+        <!-- 三個用途的切換（每個都顯示自己目前的顏色） -->
+        <div class="color-tabs">
+          <button
+            v-for="slot in COLOR_SLOTS"
+            :key="slot.key"
+            type="button"
+            class="color-tab"
+            :class="{ on: colorTab === slot.key }"
+            :aria-pressed="colorTab === slot.key ? 'true' : 'false'"
+            @click="colorTab = slot.key"
+          >
+            <span class="color-tab-dot" :style="{ background: slot.color.value }" />
+            {{ slot.label }}
+          </button>
+        </div>
+
+        <div class="color-row">
           <div class="swatches">
             <button
               v-for="c in COLOR_PRESETS"
-              :key="`${slot.key}-${c.hex}`"
+              :key="`${activeSlot.key}-${c.hex}`"
               type="button"
               class="swatch"
-              :class="{ on: slot.color.value === c.hex }"
+              :class="{ on: activeSlot.color.value === c.hex }"
               :style="{ background: c.hex }"
               :title="c.name"
-              :aria-label="`${slot.label}用${c.name}`"
-              :aria-pressed="slot.color.value === c.hex ? 'true' : 'false'"
-              @click="slot.color.value = c.hex"
+              :aria-label="`${activeSlot.label}用${c.name}`"
+              :aria-pressed="activeSlot.color.value === c.hex ? 'true' : 'false'"
+              @click="pickColorFor(c.hex)"
             />
           </div>
           <div class="color-code-row">
             <input
-              v-model="slot.draft.value"
+              v-model="activeSlot.draft.value"
               class="input color-code"
               type="text"
               maxlength="7"
               spellcheck="false"
               autocapitalize="off"
               autocorrect="off"
-              :placeholder="slot.preset"
-              :aria-label="`${slot.label}的 HTML 色碼`"
-              @change="applyColorDraft(slot.key)"
-              @keyup.enter="applyColorDraft(slot.key)"
+              :placeholder="activeSlot.preset"
+              :aria-label="`${activeSlot.label}的 HTML 色碼`"
+              @change="applyColorDraft()"
+              @keyup.enter="applyColorDraft()"
             />
-            <button type="button" class="btn btn-icon" @click="slot.color.value = slot.preset">預設色</button>
+            <button type="button" class="btn btn-icon" @click="activeSlot.color.value = activeSlot.preset">預設色</button>
+            <span class="color-preview" :style="{ background: activeSlot.color.value }" />
           </div>
-          <p class="hint">{{ slot.hint }}</p>
-          <p v-if="badColor === slot.key" class="hint color-bad">
-            色碼要像 <code>{{ slot.preset }}</code>（3 或 6 位十六進位），已還原成目前用的顏色。
+          <p class="hint">{{ activeSlot.hint }}</p>
+          <p v-if="badColor === activeSlot.key" class="hint color-bad">
+            色碼要像 <code>{{ activeSlot.preset }}</code>（3 或 6 位十六進位），已還原成目前用的顏色。
           </p>
         </div>
 
@@ -4031,7 +4051,7 @@ onUnmounted(() => {
           :active="selectedId === r.id"
           :now="nowMs"
           :needs="needIds.has(r.id)"
-          :now-button="nowButton"
+          :miss-fields="needFields.get(r.id) ?? []"
           @view="openViewer"
           @remove="removeRecord"
           @more="openMoreRecord"
@@ -4190,34 +4210,32 @@ onUnmounted(() => {
           </span>
         </div>
 
-        <!-- 上一張／下一張與圖片管理（鎖定時只能看） -->
+        <!-- 上一張／下一張與圖片管理（只有一張時不需要換頁，按鈕就先不顯示） -->
         <div class="viewer-gal">
-          <button
-            type="button"
-            class="btn btn-icon gal-nav"
-            :class="{ 'is-busy': viewingImages.length < 2 }"
-            :aria-disabled="viewingImages.length < 2"
-            aria-label="上一張"
-            title="上一張"
-            @click="stepImage(-1)"
-          >
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M15 5l-7 7 7 7" />
-            </svg>
-          </button>
-          <button
-            type="button"
-            class="btn btn-icon gal-nav"
-            :class="{ 'is-busy': viewingImages.length < 2 }"
-            :aria-disabled="viewingImages.length < 2"
-            aria-label="下一張"
-            title="下一張"
-            @click="stepImage(1)"
-          >
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M9 5l7 7-7 7" />
-            </svg>
-          </button>
+          <template v-if="viewingImages.length > 1">
+            <button
+              type="button"
+              class="btn btn-icon gal-nav"
+              aria-label="上一張"
+              title="上一張"
+              @click="stepImage(-1)"
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M15 5l-7 7 7 7" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="btn btn-icon gal-nav"
+              aria-label="下一張"
+              title="下一張"
+              @click="stepImage(1)"
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+          </template>
           <span class="spacer" />
           <template v-if="!viewing.locked">
             <button type="button" class="btn btn-icon" aria-label="上傳圖片" title="上傳圖片" @click="viewerPickEl.click()">
@@ -4925,14 +4943,51 @@ onUnmounted(() => {
   }
 }
 
-/* ---------- 設定 → 顏色 ---------- */
-.color-row {
-  margin-top: 14px;
+/* ---------- 設定 → 顏色（三個用途共用一個選盤） ---------- */
+.color-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 14px;
 }
 
-.color-row .lbl {
-  display: block;
-  margin-bottom: 6px;
+.color-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.14s, background 0.14s;
+}
+
+.color-tab:hover {
+  border-color: var(--accent);
+}
+
+/* 目前正在改的那一項：外框加深、底色淡淡帶一下 */
+.color-tab.on {
+  border-color: var(--text);
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 1px var(--text);
+}
+
+/* 每個選項前面一顆小球，直接看出它現在是什麼顏色 */
+.color-tab-dot {
+  width: 14px;
+  height: 14px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  border-radius: 50%;
+}
+
+.color-row {
+  margin-top: 4px;
 }
 
 .swatches {
@@ -4971,6 +5026,14 @@ onUnmounted(() => {
   flex: 0 0 auto;
   width: 118px;
   font-variant-numeric: tabular-nums;
+}
+
+/* 現在顏色的預覽（色碼框右邊） */
+.color-preview {
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  border-radius: 50%;
 }
 
 .color-bad {

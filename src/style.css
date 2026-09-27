@@ -25,13 +25,13 @@
   --pick: var(--accent);
   --pick-soft: var(--accent-soft);
   /*
-   * 還沒填完的記錄（外框會變黃）。
+   * 還沒填完的記錄（卡片外框與缺的那幾個欄位會變螢光黃）。
    * 判斷規則跟「匯出前先檢查」共用同一套（見 src/lib/validate.js），
-   * 顏色可以在「設定 → 顏色」改（預設＝色盤裡的「琥珀」）。
+   * 顏色可以在「設定 → 顏色」改（預設＝色盤裡的「螢光黃」）。
    */
-  --need: #c8860a;
-  --need-dark: #9c6808;
-  --need-soft: #fdf3e3;
+  --need: #f2e600;
+  --need-dark: #8a8300;
+  --need-soft: #fffde3;
   --radius: 14px;
   --radius-sm: 9px;
   --shadow-sm: 0 1px 2px rgba(26, 30, 24, 0.05);

@@ -55,6 +55,7 @@ import {
   findIncomplete,
   groupLabel,
   incompleteMessage,
+  missingFieldKeys,
   missingFields,
   normalizeRules,
 } from '../src/lib/validate.js'
@@ -1178,8 +1179,27 @@ assert.equal(crc32(new TextEncoder().encode('123456789')), 0xcbf43926, 'CRC-32 �
   assert.deepEqual(bytes.slice(30 + nA, 30 + nA + a.length), a)
 }
 
-/* ---------- 受益人的純文字（鎖定時顯示用） ---------- */
+/* ---------- 缺的欄位 key（把欄位框起來用） ---------- */
 {
+  /* 預設規則：付錢人／受益人／錢必填，付款時間與備注二選一 */
+  const empty = { payerId: '', beneficiaryIds: [], amount: '', paidAtText: '', note: '' }
+  assert.deepEqual(
+    missingFieldKeys(empty),
+    ['payer', 'beneficiary', 'amount', 'paidAt', 'note'],
+    '全部空的時候，五個欄位都要標（二選一那組兩個都算缺）',
+  )
+  const onlyTime = { payerId: 'p1', beneficiaryIds: ['p2'], amount: '10', paidAtText: '2026-09-28 12:00', note: '' }
+  assert.deepEqual(missingFieldKeys(onlyTime), [], '二選一填了時間就算過關')
+  const onlyNote = { payerId: 'p1', beneficiaryIds: ['p2'], amount: '10', paidAtText: '', note: '午餐' }
+  assert.deepEqual(missingFieldKeys(onlyNote), [], '二選一填了備注也算過關')
+  const noMoney = { payerId: 'p1', beneficiaryIds: ['p2'], amount: '', paidAtText: '2026-09-28 12:00', note: '' }
+  assert.deepEqual(missingFieldKeys(noMoney), ['amount'], '只缺錢就只標錢')
+  /* 關掉某個欄位的勾選就不管它 */
+  const rules = { checked: ['payer'], groups: [] }
+  assert.deepEqual(missingFieldKeys(empty, rules), ['payer'], '只勾付錢人時只檢查付錢人')
+}
+
+/* ---------- 受益人的純文字（鎖定時顯示用） ---------- */{
   const allPersons = [
     { id: 'p1', name: 'Vincent' },
     { id: 'p2', name: 'Ben' },

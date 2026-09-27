@@ -15,10 +15,10 @@ const props = defineProps({
   active: { type: Boolean, default: false },
   /* 現在時間（由 App.vue 每半分鐘更新一次，用來算「幾分鐘前」） */
   now: { type: Number, default: 0 },
-  /* 這一筆還沒填完（依「匯出前先檢查」的規則）→ 外框變黃 */
+  /* 這一筆還沒填完（依「匯出前先檢查」的規則）→ 外框變色 */
   needs: { type: Boolean, default: false },
-  /* 付款時間右邊要不要多一顆「現在」按鈕（設定頁可以開） */
-  nowButton: { type: Boolean, default: false },
+  /* 還沒填的欄位（payer／beneficiary／amount／paidAt／note）→ 那幾個欄位自己框起來 */
+  missFields: { type: Array, default: () => [] },
 })
 const emit = defineEmits([
   'view',
@@ -158,6 +158,28 @@ function fillNow() {
   step.value = 'idle'
 }
 
+/*
+ * 日曆裡多一個「現在」：選日期的那個面板最下面一排，按了就填成現在的時間。
+ * （使用者要的：固定在日曆裡，不用另外開設定、也不用多一顆按鈕在外面。）
+ */
+function addNowButton(instance) {
+  const cal = instance?.calendarContainer
+  if (!cal || cal.querySelector('.now-in-cal')) return
+  const row = document.createElement('div')
+  row.className = 'now-in-cal'
+  const btn = document.createElement('button')
+  btn.type = 'button'
+  btn.textContent = '現在'
+  btn.addEventListener('click', (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+    instance.close()
+    fillNow()
+  })
+  row.append(btn)
+  cal.append(row)
+}
+
 onMounted(() => {
   if (!dateAnchorEl.value) return
   /* 只把合法的日期交給 flatpickr（壞值會讓它丟錯，整張卡片就壞了） */
@@ -173,6 +195,7 @@ onMounted(() => {
          不會先出現在輸入框下方再跳回中間），這裡也不需要開場動畫 */
       animate: false,
       defaultDate: initial,
+      onOpen: (_dates, _text, instance) => addNowButton(instance),
       onChange: (_dates, text) => {
         if (text) startTimeStep(text)
       },
@@ -224,9 +247,19 @@ const statusKind = (rec) => {
 const canRetry = (rec) => !rec.locked && (rec.ocrStatus === 'error' || rec.ocrStatus === 'skipped')
 
 /*
- * 受益人的名字，用「.」接起來（Vincent.Ben.Ken）——鎖定時要用純文字顯示。
+ * 受益人的名字，用「.」接起來（Vincent.Ben.Ken）——鎖定時只顯示已選的這幾個。
  */
 const beneficiaryText = computed(() => joinBeneficiaries(r.value, props.persons))
+
+/* 已選的受益人名字（鎖定時用 chips 的樣子顯示這幾個，但按不動） */
+const beneficiaryNames = computed(() =>
+  (r.value.beneficiaryIds ?? [])
+    .map((id) => props.persons.find((p) => p.id === id)?.name ?? r.value.beneficiaryNames?.[id] ?? '')
+    .filter(Boolean),
+)
+
+/* 這一筆有哪幾個欄位還沒填（用來把那幾個欄位框起來） */
+const miss = (key) => props.missFields.includes(key)
 
 /* 人物清單裡找不到的付錢人／受益人（自動補不回來的那種） */
 const payerGone = computed(
@@ -402,7 +435,7 @@ function toggleBeneficiary(id) {
       </div>
 
       <div class="grid">
-        <label class="field">
+        <label class="field" :class="{ 'needs-field': miss('payer') }">
           <span class="lbl">付錢人</span>
           <select v-model="r.payerId" class="input" :disabled="locked || !persons.length">
             <option value="">{{ persons.length ? '請選擇' : '請先新增人物' }}</option>
@@ -414,9 +447,9 @@ function toggleBeneficiary(id) {
           </select>
         </label>
 
-        <label class="field">
+        <label class="field" :class="{ 'needs-field': miss('paidAt') }">
           <span class="lbl">付款時間</span>
-          <span class="time-slot" :class="{ 'has-now': nowButton && step === 'idle' }">
+          <span class="time-slot">
             <input
               v-if="step === 'idle'"
               ref="dateInputEl"
@@ -462,24 +495,12 @@ function toggleBeneficiary(id) {
                 <path d="M3 10h18M8 3v4M16 3v4" />
               </svg>
             </button>
-            <!-- 「現在」：直接把付款時間填成現在（設定頁可以關掉，預設是開的） -->
-            <button
-              v-if="step === 'idle' && nowButton"
-              type="button"
-              class="now-btn"
-              :disabled="locked"
-              title="填成現在的時間"
-              aria-label="填成現在的時間"
-              @click="fillNow"
-            >
-              現在
-            </button>
             <!-- flatpickr 的掛載點（看不見，只負責跳日曆） -->
             <input ref="dateAnchorEl" class="sr-only" type="text" tabindex="-1" aria-hidden="true" />
           </span>
         </label>
 
-        <label class="field">
+        <label class="field" :class="{ 'needs-field': miss('amount') }">
           <span class="lbl">付款多少錢{{ r.currency ? `（${r.currency}）` : '' }}</span>
           <input
             :value="r.amount"
@@ -491,7 +512,7 @@ function toggleBeneficiary(id) {
           />
         </label>
 
-        <div class="field note-field">
+        <div class="field note-field" :class="{ 'needs-field': miss('note') }">
           <span class="lbl">備注</span>
           <span class="note-slot">
             <input
@@ -529,12 +550,15 @@ function toggleBeneficiary(id) {
         </div>
       </div>
 
-      <div class="field">
+      <div class="field" :class="{ 'needs-field': miss('beneficiary') }">
         <span class="lbl">受益人（可多選）</span>
-        <!-- 鎖定之後不能再改，改成純文字（Vincent.Ben.Ken），不要留一排按不了的按鈕 -->
-        <p v-if="locked" class="plain-value" :class="{ empty: !beneficiaryText }">
-          {{ beneficiaryText || '（沒有選受益人）' }}
-        </p>
+        <!-- 鎖定之後不能再改：保留原本 chips 的樣子，但只顯示已經選的那幾位、按不動 -->
+        <div v-if="locked" class="chips">
+          <span v-if="!beneficiaryNames.length" class="chip is-static is-empty">沒有選受益人</span>
+          <span v-for="(name, i) in beneficiaryNames" :key="`${name}-${i}`" class="chip on is-static">
+            {{ name }}
+          </span>
+        </div>
         <div v-else-if="persons.length" class="chips">
           <button
             type="button"
@@ -666,6 +690,28 @@ function toggleBeneficiary(id) {
 .rec.needs.on {
   border-color: var(--need);
   box-shadow: 0 0 0 3px var(--need-soft), var(--shadow);
+}
+
+/*
+ * 還沒填完（依「匯出前先檢查」的規則）：這一筆缺哪一個欄位，就只框那幾個欄位。
+ * 顏色可以在「設定 → 顏色 → 還沒填完」改（--need）。
+ */
+.needs-field .input,
+.needs-field .chips {
+  border-color: var(--need);
+  background: var(--need-soft);
+}
+
+/* chips 是一整排，用 inset 的框線畫在每一顆上面（跟卡片外框同一個顏色） */
+.needs-field .chips {
+  padding: 4px;
+  border: 2px solid var(--need);
+  border-radius: var(--radius-sm);
+}
+
+.needs-field .lbl {
+  color: var(--need-dark);
+  font-weight: 650;
 }
 
 /*
@@ -1031,38 +1077,28 @@ function toggleBeneficiary(id) {
 }
 
 /*
- * 「現在」按鈕：排在日曆按鈕左邊（日曆固定在 right: 5px、寬 30px，所以這裡從 right: 40px 起算）。
- * 有它的時候輸入框右邊要多留一點空間，字才不會被壓在按鈕下面。
+ * 日曆裡的「現在」：加在日曆面板最下面一排（見 addNowButton）。
+ * 這一段沒有 scoped 屬性（動態建立的節點拿不到），所以用 !important 蓋掉 flatpickr 的樣式。
  */
-.now-btn {
-  position: absolute;
-  top: 50%;
-  right: 40px;
-  transform: translateY(-50%);
+:global(.flatpickr-calendar .now-in-cal) {
+  padding: 6px 8px 8px;
+  border-top: 1px solid #e6e6e6;
+}
+
+:global(.flatpickr-calendar .now-in-cal button) {
+  width: 100%;
   height: 30px;
-  padding: 0 9px;
-  border: 1px solid var(--line-strong);
+  border: 1px solid #d2d5cb;
   border-radius: 7px;
-  background: var(--surface);
-  color: var(--muted);
-  font-size: 12px;
+  background: #fff;
+  color: #2f6f4e;
+  font-size: 13px;
   font-weight: 650;
   cursor: pointer;
 }
 
-.now-btn:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.now-btn:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-/* 有「現在」按鈕時，輸入框要多讓出 40px */
-.time-slot.has-now .time-input {
-  padding-right: 80px;
+:global(.flatpickr-calendar .now-in-cal button:hover) {
+  background: #e9f0ea;
 }
 
 /* 日曆置中顯示時，背景加一層薄薄的遮罩讓它更好點 */
@@ -1077,21 +1113,21 @@ function toggleBeneficiary(id) {
   gap: 6px;
 }
 
-/* 鎖定時受益人的純文字（Vincent.Ben.Ken）：跟輸入框一樣高的灰字，不能按 */
-.plain-value {
-  margin: 0;
-  padding: 7px 11px;
-  border: 1px dashed var(--line-strong);
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-  color: var(--text);
-  font-size: 14px;
-  line-height: 1.5;
-  word-break: break-all;
+/*
+ * 鎖定時受益人的樣子：維持原本 chips 的圓角樣式，但只顯示「已選的那幾位」、而且不能按。
+ */
+.chip.is-static {
+  display: inline-flex;
+  align-items: center;
+  cursor: default;
+  font-weight: 600;
 }
 
-.plain-value.empty {
+.chip.is-static.is-empty {
+  border-style: dashed;
+  background: var(--surface);
   color: var(--muted);
+  font-weight: 500;
 }
 
 .chip {

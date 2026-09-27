@@ -132,6 +132,32 @@ export function missingFields(record, rules = DEFAULT_EXPORT_RULES) {
 }
 
 /**
+ * 跟 missingFields 同一套規則，但回傳「欄位的 key」而不是顯示名稱，
+ * 給「把缺的那幾個欄位框起來」用。群組（N選M）只要整組沒過，
+ * 就把那一組裡「還沒填的欄位」都算進去——使用者才知道是哪幾個要補。
+ */
+export function missingFieldKeys(record, rules = DEFAULT_EXPORT_RULES) {
+  if (!record) return []
+  const r = normalizeRules(rules)
+  const inGroups = new Set(r.groups.flatMap((g) => g.fields))
+  const keys = new Set()
+
+  for (const key of r.checked) {
+    if (inGroups.has(key)) continue
+    if (!fieldFilled(record, key)) keys.add(key)
+  }
+
+  for (const g of r.groups) {
+    const filled = g.fields.filter((key) => fieldFilled(record, key)).length
+    if (filled >= g.min) continue
+    for (const key of g.fields) if (!fieldFilled(record, key)) keys.add(key)
+  }
+
+  /* 依照欄位本身的順序回傳，畫面標記的順序才穩定 */
+  return FIELD_KEYS.filter((key) => keys.has(key))
+}
+
+/**
  * 找出所有還沒填完的記錄。
  * labelOf 用來給人看得懂的標籤（例如「本機-3」），沒給就用檔名。
  * 使用者把它設成「不用檢查」的記錄（checkExport === false）會直接跳過。
