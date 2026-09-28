@@ -63,8 +63,8 @@ const currentSheetId = ref('')
 const currentSheet = computed(
   () => sheets.value.find((s) => s.id === currentSheetId.value) ?? sheets.value[0] ?? null,
 )
-/* 主畫面的付款記錄標題：只有一個分頁時維持「付款記錄」 */
-const sheetTitle = computed(() => sheetCardTitle(sheets.value, currentSheetId.value))
+/* 主畫面最上面的大標題：只有一個分頁時是「付款記錄」，多個分頁時帶上分頁名稱 */
+const pageTitle = computed(() => sheetCardTitle(sheets.value, currentSheetId.value))
 
 /* ---------- 人物 ---------- */
 const persons = ref([])
@@ -2091,16 +2091,44 @@ async function removeRecord(record) {
   renumberManualRecords()
 }
 
-/* ---------- 更多：鎖定／解除與刪除（刪除鈕從卡片搬到這裡） ---------- */
+/* ---------- 更多：改名、鎖定／解除與刪除（刪除鈕從卡片搬到這裡） ---------- */
 const moreDialogEl = ref(null)
 const moreRecord = ref(null)
+/* 改名用的草稿：開對話框時填入現在的名稱 */
+const moreName = ref('')
 
 function openMoreRecord(record) {
   moreRecord.value = record
+  moreName.value = record?.fileName ?? ''
   nextTick(() => moreDialogEl.value?.showModal())
 }
 
 const closeMoreRecord = () => moreDialogEl.value?.close()
+
+/* 只打名字、沒打副檔名時自動接回原本的副檔名（eat → eat.png） */
+const withOriginalExt = (name, original) => {
+  const text = String(name ?? '').trim()
+  if (!text) return ''
+  const dot = String(original ?? '').lastIndexOf('.')
+  if (text.includes('.') || dot <= 0) return text
+  return `${text}${String(original).slice(dot)}`
+}
+
+const canRenameFromMore = computed(() => {
+  const record = moreRecord.value
+  if (!record || record.locked) return false
+  const next = withOriginalExt(moreName.value, record.fileName)
+  return !!next && next !== record.fileName
+})
+
+/** 從「更多」改記錄名稱（卡片上的名稱只是顯示） */
+function renameFromMore() {
+  const record = moreRecord.value
+  if (!record || !canRenameFromMore.value) return
+  record.fileName = withOriginalExt(moreName.value, record.fileName)
+  moreName.value = record.fileName
+  actionNotice.value = `已改名為「${record.fileName}」`
+}
 
 /**
  * 鎖定／解除。
@@ -4160,7 +4188,7 @@ onUnmounted(() => {
     <template v-else-if="view === 'main'">
     <header class="head">
       <div class="head-text">
-        <h1>付款記錄</h1>
+        <h1>{{ pageTitle }}</h1>
         <p class="hint">上傳付款截圖，自動整理成可編輯的記錄。資料只存在這台裝置的瀏覽器裡。</p>
       </div>
       <div class="head-btns">
@@ -4258,7 +4286,7 @@ onUnmounted(() => {
 
     <section class="card card-records" :class="{ 'is-flush': recFlush }">
       <div class="card-head">
-        <h2>{{ sheetTitle }} <span class="count">{{ records.length }}</span></h2>
+        <h2>付款記錄 <span class="count">{{ records.length }}</span></h2>
         <div ref="payBarEl" class="head-actions">
           <label class="inline-field">
             <span class="lbl"
@@ -4530,6 +4558,32 @@ onUnmounted(() => {
           <span class="more-seq">{{ seqLabels.get(moreRecord.id) ?? '' }}</span>
           <span class="more-file" :title="moreRecord.fileName">{{ moreRecord.fileName }}</span>
         </p>
+
+        <!-- 改名：卡片上的名稱只是顯示，要改從這裡改（鎖定的不能改） -->
+        <label class="field more-rename">
+          <span class="lbl">名稱</span>
+          <input
+            v-model="moreName"
+            class="input"
+            maxlength="120"
+            placeholder="例如：eat.png"
+            :disabled="!!moreRecord.locked"
+            @keydown.enter.prevent="renameFromMore"
+          />
+        </label>
+        <div class="head-actions">
+          <button
+            type="button"
+            class="btn btn-primary"
+            :class="{ 'is-busy': !canRenameFromMore }"
+            :aria-disabled="!canRenameFromMore"
+            @click="renameFromMore"
+          >
+            儲存名稱
+          </button>
+          <span v-if="moreRecord.locked" class="hint">已鎖定，要改名請先解除鎖定。</span>
+          <span v-else-if="!moreName.trim()" class="hint">名稱不能空白。</span>
+        </div>
 
         <p v-if="moreRecord.locked" class="more-state more-state-locked">
           已鎖定：這筆記錄的付錢人、付款時間、金額、備注、受益人、重新辨識與補圖都不能改，
@@ -5987,6 +6041,16 @@ onUnmounted(() => {
   padding-bottom: 10px;
   border-bottom: 1px solid var(--line);
   font-weight: 600;
+}
+
+/* 「更多」裡的改名欄位 */
+.more-rename {
+  margin-top: 12px;
+}
+
+.more-rename .lbl {
+  font-size: 12.5px;
+  color: var(--muted);
 }
 
 .more-seq {
