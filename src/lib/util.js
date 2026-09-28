@@ -207,3 +207,42 @@ export function buildShareQuery({ persons = [], currency = '', notes = [] } = {}
   return params.toString()
 }
 
+/** 手機／平板才用系統分享面板（iPhone 的分享畫面），桌機直接下載 */
+export const useShareSheet = () =>
+  window.matchMedia?.('(pointer: coarse)').matches ||
+  window.matchMedia?.('(max-width: 560px)').matches
+
+/** 單檔下載（分享面板打不開時的最後手段） */
+export function downloadBlob(blob, fileName) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = fileName
+  a.rel = 'noopener'
+  document.body.append(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 10000)
+}
+
+/**
+ * 把一個檔案交給使用者：先試系統分享面板，不行就退回下載。
+ * 回傳 'shared'｜'saved'｜'cancelled'，呼叫端可以照著顯示訊息。
+ * （分享面板要「使用者手勢」才一定開得起來：被擋下來時會回 'saved' 直接下載。）
+ */
+export async function shareOrSaveFile(file, title = file.name) {
+  if (useShareSheet() && typeof navigator.share === 'function' && typeof navigator.canShare === 'function') {
+    try {
+      if (navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title })
+        return 'shared'
+      }
+    } catch (e) {
+      /* 使用者按取消不算失敗，也不要再彈下載 */
+      if (e?.name === 'AbortError') return 'cancelled'
+    }
+  }
+  downloadBlob(file, file.name)
+  return 'saved'
+}
+

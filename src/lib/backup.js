@@ -79,6 +79,23 @@ export async function toBackup(records, persons, defaultCurrency, encodeImage = 
   }
 }
 
+/**
+ * 這個檔案「看起來」是不是本程式匯出的備份。
+ * QR CODE 傳輸可以收到任何檔案，匯入前先用這個判斷：
+ * 不是備份的話就交給使用者自己分享／儲存，不要硬丟進匯入流程。
+ */
+export async function isBackupFile(file) {
+  try {
+    /* 先用開頭幾個位元組判斷有沒有一點像 JSON，二進位檔就不必整包讀進來 */
+    const head = await file.slice(0, 64).text()
+    if (!head.trimStart().startsWith('{')) return false
+    const payload = JSON.parse(await file.text())
+    return !!payload && payload.app === APP_ID && Array.isArray(payload.records)
+  } catch {
+    return false
+  }
+}
+
 export async function fromBackup(payload, decodeImage = base64ToBlob) {
   if (!payload || payload.app !== APP_ID || !Array.isArray(payload.records))
     throw new Error('這不是本程式匯出的備份檔')

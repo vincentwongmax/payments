@@ -648,6 +648,28 @@ const openSettings = async () => {
   await Promise.all([loadStorageInfo(), loadOfflineState()])
 }
 
+const DECIMEN_STATE = 'decimen'
+
+const openQrPanel = () => {
+  if (view.value === 'decimen') return
+  view.value = 'decimen'
+  window.scrollTo({ top: 0 })
+  try {
+    history.pushState({ [DECIMEN_STATE]: true }, '')
+  } catch {
+    /* 不能操作歷史記錄不影響使用 */
+  }
+}
+
+const closeQrPanel = () => {
+  /* 有自己補的那筆歷史記錄就退回去（讓 popstate 負責切畫面） */
+  if (history.state?.[DECIMEN_STATE]) {
+    history.back()
+    return
+  }
+  view.value = 'settings'
+}
+
 /* ---------- 設定頁 ---------- */
 /*
  * 設定頁的說明文字平常只顯示一行（超出用 … 收掉），點一下才展開看全部。
@@ -687,13 +709,14 @@ const closeSettings = () => {
   window.scrollTo({ top: 0 })
 }
 
-/* 返回手勢／返回鍵：切回主畫面就好，不要離開整個 App */
+/* 返回手勢／返回鍵：切回上一個頁面就好，不要離開整個 App */
 function onPopState() {
-  const wantSettings = !!history.state?.[SETTINGS_STATE]
-  if ((view.value === 'settings') === wantSettings) return
-  view.value = wantSettings ? 'settings' : 'main'
+  const state = history.state ?? {}
+  const want = state[SETTINGS_STATE] ? 'settings' : state[DECIMEN_STATE] ? 'decimen' : 'main'
+  if (view.value === want) return
+  view.value = want
   window.scrollTo({ top: 0 })
-  if (wantSettings) Promise.all([loadStorageInfo(), loadOfflineState()])
+  if (want === 'settings') Promise.all([loadStorageInfo(), loadOfflineState()])
 }
 
 async function loadStorageInfo() {
@@ -2743,7 +2766,7 @@ const qrSecureWarn = () =>
 
 /**
  * QR CODE 匯出：這台把畫面變成動畫 QR 給對方掃。
- * 先開面板（使用者手勢當下就切過去），再去準備備份檔（圖片壓縮要時間）。
+ * 先切到傳輸頁（使用者手勢當下就切過去），再去準備備份檔（圖片壓縮要時間）。
  */
 function qrExport() {
   if (qrBusy.value) return
@@ -2757,6 +2780,7 @@ function qrExport() {
     return
   }
 
+  openQrPanel()
   qrBusy.value = true
   qrStatus.value = '正在準備備份檔（圖片多的話要等一下）…'
   ;(async () => {
@@ -2774,9 +2798,10 @@ function qrExport() {
   })()
 }
 
-/** QR CODE 匯入：開掃描畫面；面板收到檔案後會自己把檔案交回來（見 onQrReceived） */
+/** QR CODE 匯入：切到傳輸頁的掃描畫面；面板收到檔案後會自己把檔案交回來（見 onQrReceived） */
 async function qrImport() {
   if (!qrSecure()) return qrSecureWarn()
+  openQrPanel()
   try {
     await qrPanel.value?.receive()
     qrStatus.value = '掃描中：把鏡頭對準對方手機上的 QR 動畫（距離 15～30 公分）'
@@ -2785,16 +2810,21 @@ async function qrImport() {
   }
 }
 
-/** 面板收到檔案了：關掉面板並匯入 */
+/** 面板收到本程式的備份：離開傳輸頁並匯入 */
 async function onQrReceived(file) {
   qrStatus.value = `已收到「${file.name}」，開始匯入…`
-  qrPanel.value?.close()
+  closeQrPanel()
   try {
     await importFiles([file])
     qrStatus.value = backupNotice.value || '已收到並匯入完成'
   } catch (e) {
     qrStatus.value = `匯入失敗：${e?.message ?? e}`
   }
+}
+
+/** 面板收到不是本程式格式的檔案：留在傳輸頁讓使用者自己分享／儲存，只更新一下說明 */
+function onQrForeign(file) {
+  qrStatus.value = `收到「${file.name}」——不是本程式的備份檔，請用畫面中的「分享／儲存」帶走。`
 }
 
 const alignDialogEl = ref(null)
@@ -3146,7 +3176,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="page">
+  <div class="page" :class="{ 'is-hidden': view === 'decimen' }">
     <!-- ================= 設定頁 ================= -->
     <div v-if="view === 'settings'" class="view-settings" @click="toggleHint">
       <header class="head head-settings">
@@ -3679,7 +3709,7 @@ onUnmounted(() => {
     </div>
 
     <!-- ================= 主畫面 ================= -->
-    <template v-else>
+    <template v-else-if="view === 'main'">
     <header class="head">
       <div class="head-text">
         <h1>付款記錄</h1>
@@ -4293,10 +4323,18 @@ onUnmounted(() => {
       </form>
     </dialog>
 
-    <!-- QR CODE 傳輸面板：decimen 的介面整份留在 DOM 裡（runtime 只綁一次），
-         沒有開的時候用 CSS 藏起來，見 src/components/DecimenPanel.vue -->
-    <DecimenPanel ref="qrPanel" @received="onQrReceived" />
+    <!-- QR CODE 傳輸：跟設定頁一樣是「另一個頁面」（由 view 切換、返回手勢可以退回），
+         不是在內容上面蓋一層。decimen 的介面整份留在 DOM 裡（runtime 只綁一次），
+         沒有開的時候只是藏起來，見 src/components/DecimenPanel.vue -->
   </div>
+
+  <DecimenPanel
+    :open="view === 'decimen'"
+    ref="qrPanel"
+    @received="onQrReceived"
+    @foreign="onQrForeign"
+    @close="closeQrPanel"
+  />
 </template>
 
 <style scoped>
@@ -4304,6 +4342,15 @@ onUnmounted(() => {
   max-width: 1080px;
   margin: 0 auto;
   padding: 28px 16px 72px;
+}
+
+/*
+ * 傳輸頁是另一個頁面（DecimenPanel 是 .page 的兄弟節點，才能整片深色滿版）。
+ * 這時候 .page 裡只剩對話框、沒有內容，把它的留白收掉才不會把面板往下推。
+ */
+.page.is-hidden {
+  padding: 0;
+  margin: 0;
 }
 
 .head {

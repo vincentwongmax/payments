@@ -18,13 +18,19 @@
 import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 /* decimen 的樣式（已經被外掛縮進 #decimen-app，不會汙染本來的 App） */
 import decimenCss from 'virtual:decimen-css'
+import { isBackupFile } from '../lib/backup.js'
+import { shareOrSaveFile } from '../lib/util.js'
 
-const emit = defineEmits(['received', 'close'])
+/* 由 App 的 view 控制（跟設定頁一樣是一個「頁面」，不是在頁面上蓋一層） */
+defineProps({ open: { type: Boolean, default: false } })
+const emit = defineEmits(['received', 'foreign', 'close'])
 
-const open = ref(false)
 const mode = ref('send')
 const status = ref('')
 const failed = ref('')
+/* 收到「不是本程式備份檔」的檔案時放這裡，讓使用者自己分享／儲存 */
+const foreign = ref(null)
+const foreignNote = ref('')
 
 /* runtime 只載入一次；兩份 entry 各自對應一半的介面 */
 let loaded = null
@@ -77,12 +83,124 @@ async function ensureLoaded() {
   }
 }
 
-async function show(which) {
+/*
+ * 每一次「進到這一頁」都重新開始：
+ *   - 先把上一次的東西收乾淨（停掉串流、關掉鏡頭、關掉對話框、離開全螢幕）
+ *   - 再把 decimen 自己會改的那些節點還原成載入前的樣子（見 snapshot()）
+ * 這樣就不會看到上一趟的檔名、上一顆 QR、上一次收到的檔案。
+ *
+ * 注意：不能改用「重新 import runtime」來達成，因為模組層會註冊 window／document
+ * 的監聽、也會留下解碼 worker；而且 decimen 是載入時就把 DOM 節點抓在閉包裡，
+ * 把標記重建（innerHTML）會讓它指到已經被丟掉的節點。所以只能就地還原。
+ */
+/*
+ * 只有文字的節點：可以直接還原 textContent（同時把 runtime 追加的子節點清掉）。
+ * 容器節點不能碰 textContent——那只會把底下原本的標記（例如 #stage 裡的 canvas、
+ * #pane-file 裡的按鈕）整批刪掉。
+ */
+const TEXT_IDS = [
+  'start',
+  'stats',
+  'progress-label',
+  'eta-label',
+  'camera-actual',
+  'specs',
+  'export-estimate',
+  'file-picker-label',
+  'file-picker-button',
+]
+
+/* 裡面還有子節點的容器：只還原屬性，textContent 一律不碰 */
+const BOX_IDS = [
+  'preview',
+  'progress',
+  'progress-status',
+  'metrics',
+  'diagnostics',
+  'settings',
+  'no-signal',
+  'stage',
+  'stream-specs',
+  'export-panel',
+  'pane-file',
+  'pane-snippet',
+]
+
+/* 內容是 runtime 自己長出來的，還原時直接清空 */
+const EMPTY_IDS = ['result', 'no-signal-tips']
+
+let pristine = null
+
+/** 在 decimen 還沒載入前，先記下這些節點原本的樣子 */
+function snapshot() {
+  const grab = (ids, withText) =>
+    ids.map((id) => {
+      const el = document.getElementById(id)
+      if (!el) return null
+      return {
+        id,
+        withText,
+        text: withText ? el.textContent : '',
+        hidden: el.hidden,
+        display: el.style.display,
+        className: el.className,
+        disabled: el.disabled,
+      }
+    })
+  pristine = [...grab(TEXT_IDS, true), ...grab(BOX_IDS, false)]
+}
+
+/** 把 decimen 動過的節點還原成全新的樣子 */
+function restoreSnapshot() {
+  for (const saved of pristine ?? []) {
+    if (!saved) continue
+    const el = document.getElementById(saved.id)
+    if (!el) continue
+    el.hidden = saved.hidden
+    el.style.display = saved.display
+    el.className = saved.className
+    if (saved.disabled !== undefined) el.disabled = saved.disabled
+    if (saved.withText) el.textContent = saved.text
+    /* 檔案欄位與文字框要另外清值（textContent 清不掉 value） */
+    if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) el.value = ''
+  }
+  for (const id of EMPTY_IDS) document.getElementById(id)?.replaceChildren()
+  /* 送出模式回到「檔案」，並讓 decimen 自己切換對應的面板 */
+  const radio = document.querySelector('#mode-picker input[value="file"]')
+  if (radio && !radio.checked) {
+    radio.checked = true
+    radio.dispatchEvent(new Event('change', { bubbles: true }))
+  }
+}
+
+/** 上一次的串流／鏡頭／對話框／全螢幕全部收掉 */
+function teardown() {
+  stopCamera()
+  stopSend()
+  /* decimen 的說明／分享對話框是 top layer，祖先 display:none 蓋不掉，要自己關 */
+  for (const dialog of document.querySelectorAll('#decimen-app dialog[open]')) dialog.close()
+  document.body.classList.remove('qr-full')
+}
+
+/** 傳送中就把 decimen 自己的「Stop transfer」按下去，內部串流才會真的停 */
+function stopSend() {
+  const pane = document.getElementById('pane-file')
+  if (!pane?.classList.contains('has-file')) return
+  document.getElementById('file-picker-button')?.click()
+}
+
+/** 進到某一頁：收乾淨上一次的、還原成全新、再確認 runtime 已經載入 */
+async function enter(which) {
   mode.value = which
-  open.value = true
   failed.value = ''
   status.value = ''
+  foreign.value = null
+  foreignNote.value = ''
   await nextTick()
+  teardown()
+  restoreSnapshot()
+  /* 掃描頁固定先提示要按哪一顆（匯出那邊由 decimen 自己的狀態列負責） */
+  if (which === 'receive') status.value = '按「Start camera」開始掃描對方螢幕上的 QR 動畫'
   await ensureLoaded()
 }
 
@@ -92,12 +210,7 @@ async function show(which) {
  * 等於使用者自己選了那個檔。
  */
 async function sendFile(file) {
-  await show('send')
-  const radio = document.querySelector('#mode-picker input[value="file"]')
-  if (radio && !radio.checked) {
-    radio.checked = true
-    radio.dispatchEvent(new Event('change', { bubbles: true }))
-  }
+  await enter('send')
   const input = document.getElementById('cfg-file')
   if (!input) throw new Error('找不到 decimen 的檔案欄位')
   const dt = new DataTransfer()
@@ -109,8 +222,7 @@ async function sendFile(file) {
 
 /** 接收：開掃描介面，收到檔案時由 watchResult 丟出 received */
 async function receive() {
-  await show('receive')
-  status.value = '按「Start camera」開始掃描對方螢幕上的 QR 動畫'
+  await enter('receive')
 }
 
 /*
@@ -126,13 +238,55 @@ async function takeResult(link) {
   try {
     const blob = await (await fetch(link.href)).blob()
     const file = new File([blob], name, { type: blob.type || 'application/json' })
-    status.value = `已收到「${name}」，開始匯入…`
-    emit('received', file)
+    if (await isBackupFile(file)) {
+      status.value = `已收到「${name}」，開始匯入…`
+      emit('received', file)
+    } else {
+      /* 不是本程式的備份檔：不硬匯入，交給使用者自己帶走 */
+      await takeForeign(file)
+    }
   } catch (e) {
     failed.value = `收下檔案失敗：${e?.message ?? e}`
   } finally {
     taking = false
   }
+}
+
+/*
+ * 收到別的檔案（照片、PDF、文字…都可以）：
+ * 先自動試開系統分享面板；分享面板要「使用者手勢」才一定開得起來，
+ * 被擋下來就退回下載，並且留一顆按鈕讓使用者自己按（點按就一定會開）。
+ */
+async function takeForeign(file) {
+  foreign.value = file
+  foreignNote.value = ''
+  status.value = `收到「${file.name}」（${(file.size / 1048576).toFixed(1)} MB）——不是本程式的備份檔`
+  emit('foreign', file)
+  const how = await shareOrSaveFile(file)
+  if (how === 'shared') foreignNote.value = '已開啟分享面板。'
+  else if (how === 'saved') foreignNote.value = '分享面板打不開，已經直接下載。'
+  /* 使用者按取消就甚麼都不說，按鈕還留著讓他再試 */
+}
+
+/** 使用者自己按「分享／儲存」：有手勢就一定開得起來 */
+async function shareForeign() {
+  const file = foreign.value
+  if (!file) return
+  const how = await shareOrSaveFile(file)
+  if (how === 'shared') foreignNote.value = '已開啟分享面板。'
+  else if (how === 'saved') foreignNote.value = '這個瀏覽器沒有分享面板，已經直接下載。'
+}
+
+/** ✕ 或手機返回：真的收掉面板（歷史記錄由 App 負責，這裡只收拾乾淨） */
+function close() {
+  teardown()
+  emit('close')
+}
+
+/* 切換傳送／接收：一樣走 enter()，離開的那一邊會一起收乾淨（串流／鏡頭都不留） */
+async function setMode(which) {
+  if (mode.value === which) return
+  await enter(which)
 }
 
 function watchResult() {
@@ -180,22 +334,8 @@ function stopCamera() {
   if (video) video.srcObject = null
 }
 
-async function close() {
-  stopCamera()
-  /* decimen 的說明／分享對話框是 top layer，祖先 display:none 蓋不掉，要自己關 */
-  for (const dialog of document.querySelectorAll('#decimen-app dialog[open]')) dialog.close()
-  open.value = false
-  emit('close')
-}
-
-async function setMode(which) {
-  if (mode.value === which) return
-  if (which !== 'receive') stopCamera()
-  mode.value = which
-  await ensureLoaded()
-}
-
 onMounted(() => {
+  snapshot()
   watchResult()
   watchSpecs()
 })
@@ -212,8 +352,10 @@ defineExpose({ sendFile, receive, close })
 </script>
 
 <template>
-  <!-- 外層：永遠留在 DOM 裡，只用 class 切換顯示。
-       decimen 的介面是深色的，這裡就用深色把它包起來。 -->
+  <!--
+    這一頁跟設定頁一樣是「一個頁面」（由 App 的 view 決定顯示），不是在頁面上蓋一層。
+    但 decimen 的標記必須一直留在 DOM 裡（runtime 只綁一次），所以關掉時只是藏起來。
+  -->
   <div class="dt-root" :class="[`mode-${mode}`, { 'is-open': open }]">
     <div class="dt-bar">
       <div class="dt-tabs" role="tablist" aria-label="QR CODE 傳輸">
@@ -247,6 +389,19 @@ defineExpose({ sendFile, receive, close })
 
     <p v-if="status" class="dt-status">{{ status }}</p>
     <p v-if="failed" class="dt-error">{{ failed }}</p>
+
+    <!-- 收到的不是本程式的備份檔：讓使用者自己分享／儲存帶走 -->
+    <div v-if="foreign" class="dt-foreign">
+      <p class="dt-foreign-text">
+        <strong>{{ foreign.name }}</strong
+        >（{{ (foreign.size / 1048576).toFixed(1) }} MB）不是本程式的備份檔，所以沒有匯入。
+        要留下的話可以自己分享或儲存。
+      </p>
+      <div class="dt-foreign-actions">
+        <button type="button" class="dt-btn-primary" @click="shareForeign">分享／儲存</button>
+      </div>
+      <p v-if="foreignNote" class="dt-foreign-note">{{ foreignNote }}</p>
+    </div>
 
     <div class="dt-body">
       <!-- ↓↓↓ decimen 的介面：整份靜態，任何一個 id 都不能少 ↓↓↓ -->
@@ -479,13 +634,14 @@ defineExpose({ sendFile, receive, close })
 </template>
 
 <style scoped>
-/* 面板本體：固定滿版、深色，蓋在整個 App 上面 */
+/*
+ * 面板本體：這是一個「頁面」（跟設定頁一樣佔滿整個畫面），不是蓋在內容上面的浮層。
+ * 預設藏起來，view 切到 decimen 時才用 .is-open 顯示。
+ */
 .dt-root {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
   display: none;
   flex-direction: column;
+  min-height: 100vh;
   background: #070a11;
   color-scheme: dark;
 }
@@ -494,8 +650,11 @@ defineExpose({ sendFile, receive, close })
   display: flex;
 }
 
-/* 頂部：傳送／接收切換 + 關閉 */
+/* 頂部：傳送／接收切換 + 關閉（往下捲也固定在最上面，跟設定頁的返回列一致） */
 .dt-bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -563,12 +722,54 @@ defineExpose({ sendFile, receive, close })
   color: #ffb3bd;
 }
 
-/* 內容區：自己捲動，decimen 那兩頁原本的 100vh 在這裡不需要 */
+/* 收到別的檔案時的說明與「分享／儲存」 */
+.dt-foreign {
+  margin: 0;
+  padding: 10px 14px;
+  background: #1d1a08;
+  border-bottom: 1px solid #4a4118;
+  color: #f2e2a8;
+  text-align: center;
+}
+
+.dt-foreign-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.dt-foreign-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: 8px;
+}
+
+.dt-btn-primary {
+  padding: 9px 18px;
+  border: 0;
+  border-radius: 9px;
+  background: #3f6fbe;
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.dt-btn-primary:hover {
+  background: #4d80d4;
+}
+
+.dt-foreign-note {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #cbbd8c;
+}
+
+/* 內容區（頁面本身就隨文件捲動，這裡不需要再一層自己的捲軸） */
 .dt-body {
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  -webkit-overflow-scrolling: touch;
 }
 
 /* decimen 的 body 規則是 100vh，縮進面板後改成自然高度 */
@@ -596,8 +797,14 @@ defineExpose({ sendFile, receive, close })
  */
 body.qr-full .dt-bar,
 body.qr-full .dt-status,
-body.qr-full .dt-error {
+body.qr-full .dt-error,
+body.qr-full .dt-foreign {
   display: none;
+}
+
+/* 全螢幕播 QR 時整頁不要跟著捲（畫布是照視窗大小畫的） */
+body.qr-full {
+  overflow: hidden;
 }
 
 body.qr-full .dt-body {

@@ -49,7 +49,7 @@ import { md5Hex } from '../src/lib/md5.js'
 import { scopeCss, scopeSelector } from '../src/decimen/scopeCss.js'
 import { datePart, imageExportName, uniqueExportName } from '../src/lib/imageExport.js'
 import { crc32, zipStore } from '../src/lib/zip.js'
-import { fromBackup, mergeRecords, remapRecords, resolvePersons, toBackup } from '../src/lib/backup.js'
+import { fromBackup, isBackupFile, mergeRecords, remapRecords, resolvePersons, toBackup } from '../src/lib/backup.js'
 import {
   DEFAULT_EXPORT_RULES,
   FIELD_KEYS,
@@ -1373,5 +1373,32 @@ const scoped = scopeCss(
 assert.match(scoped, /@media \(max-width:600px\)\{#decimen-app \.a\{color:red\}\}/)
 assert.match(scoped, /@keyframes spin\{0%\{opacity:0\}100%\{opacity:1\}\}/)
 assert.match(scoped, /#decimen-app \.b\{color:blue\}/)
+
+/*
+ * ---------- QR 傳輸收到的東西是不是本程式的備份 ----------
+ * 面板可以收到任何檔案（照片、PDF、文字…），匯入前先用這個擋：
+ * 不是備份的就交給使用者自己分享／儲存，不要硬丟進匯入流程。
+ */
+const backupJson = JSON.stringify({ app: 'payment-records', version: 1, persons: [], records: [] })
+assert.equal(await isBackupFile(new File([backupJson], 'x.json', { type: 'application/json' })), true, '本程式的備份要認得出來')
+assert.equal(await isBackupFile(new File(['hello'], 'a.txt', { type: 'text/plain' })), false, '純文字不是備份')
+assert.equal(
+  await isBackupFile(new File([JSON.stringify({ app: 'something-else', records: [] })], 'a.json')),
+  false,
+  '別的 App 的 JSON 不算',
+)
+assert.equal(
+  await isBackupFile(new File([JSON.stringify({ app: 'payment-records' })], 'a.json')),
+  false,
+  '少了 records 陣列不算',
+)
+assert.equal(
+  await isBackupFile(new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a])], 'a.png', { type: 'image/png' })),
+  false,
+  '二進位檔不算（也不該整包讀進來）',
+)
+assert.equal(await isBackupFile(new File([], 'empty.json')), false, '空檔案不算')
+/* 檔名不叫 .json 但內容是備份（對方可能改了檔名）也要認得 */
+assert.equal(await isBackupFile(new File([backupJson], 'no-extension')), true)
 
 console.log('test/run.js: 全部通過')
