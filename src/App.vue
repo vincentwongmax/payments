@@ -3406,96 +3406,100 @@ onUnmounted(() => {
         <p class="hint">顏色存在本機，重新整理或重開 App 都還在；「重置」不會清掉這個設定。</p>
       </section>
 
+      <!-- 匯出與傳輸：把資料帶出去的三種方式（文字／圖片／另一台裝置） -->
       <section class="card">
         <div class="card-head card-head-inline">
-          <h2>匯出文字（不含圖片）</h2>
+          <h2>匯出與傳輸</h2>
         </div>
-        <p class="hint">
-          <code>付錢人 → 受益人 → 錢 → 備注 → 付款時間</code>，Tab 分隔、第一行是欄位名稱；
-          貼到 Excel 會自動分欄。付款時間沒填的就留空。
-        </p>
-        <div class="head-actions">
-          <button class="btn" @click="exportTextOnly">下載 .txt</button>
-          <button class="btn btn-primary" @click="copyTextOnly">複製文字</button>
-        </div>
-      </section>
+        <p class="hint">三種把資料帶出去的方式，全部在這台裝置上完成，不會上傳到任何伺服器。</p>
 
-      <!-- 匯出圖片：原圖或壓縮後，一張圖一個檔（不打包成 zip） -->
-      <section class="card">
-        <div class="card-head card-head-inline">
-          <h2>匯出圖片</h2>
-        </div>
-        <p class="hint">
-          每一筆記錄的圖片（<strong>主圖＋附加圖片</strong>）都匯出成獨立檔案，檔名是
-          <code>序號-付錢人-金額-幣別-付款時間</code>（例：<code>001-Vincent-45-MOP-2026-09-06.jpg</code>），
-          同一筆的第 2 張以後加 <code>-2</code>、<code>-3</code>。沒有圖片的記錄會跳過。
-        </p>
-        <p class="hint">
-          <strong>不會打包成 zip</strong>：手機／平板按下去會開系統的分享面板（iOS 可以一次
-          「儲存 N 張影像」到照片），電腦會請你選一個資料夾直接寫檔；兩個都不支援的瀏覽器才會
-          打包成一個 zip 下載。「壓縮圖」跟備份匯出用同一組設定（短邊至少 700px、JPEG、目標壓到原本的 1/3）。
-        </p>
-        <div class="head-actions">
-          <button
-            class="btn"
-            :class="{ 'is-busy': imagesBusy }"
-            :aria-disabled="imagesBusy"
-            @click="exportImages(false)"
-          >
-            匯出原圖
-          </button>
-          <button
-            class="btn btn-primary"
-            :class="{ 'is-busy': imagesBusy }"
-            :aria-disabled="imagesBusy"
-            @click="exportImages(true)"
-          >
-            匯出壓縮圖
-          </button>
-        </div>
-      </section>
+        <div class="io-list">
+          <section class="io-item">
+            <div class="io-head">
+              <h3>匯出文字（不含圖片）</h3>
+              <span class="io-tag">可貼進 Excel</span>
+            </div>
+            <p class="hint">
+              <code>付錢人 → 受益人 → 錢 → 備注 → 付款時間</code>，Tab 分隔、第一行是欄位名稱；
+              貼到 Excel 會自動分欄。付款時間沒填的就留空。
+            </p>
+            <div class="head-actions">
+              <button class="btn" @click="exportTextOnly">下載 .txt</button>
+              <button class="btn btn-primary" @click="copyTextOnly">複製文字</button>
+            </div>
+          </section>
 
-      <!-- QR CODE 傳輸：用螢幕與鏡頭把完整備份傳給另一台裝置
-           （decimen 光學傳輸，已整合進這個 App，見 src/components/DecimenPanel.vue） -->
-      <section class="card">
-        <div class="card-head card-head-inline">
-          <h2>QR CODE 傳輸</h2>
+          <section class="io-item">
+            <div class="io-head">
+              <h3>匯出圖片</h3>
+              <span class="io-tag">主圖＋附加圖片</span>
+            </div>
+            <p class="hint">
+              每一筆記錄的圖片都匯出成獨立檔案，檔名是
+              <code>序號-付錢人-金額-幣別-付款時間</code>（例：<code>001-Vincent-45-MOP-2026-09-06.jpg</code>），
+              同一筆的第 2 張以後加 <code>-2</code>、<code>-3</code>。沒有圖片的記錄會跳過。
+            </p>
+            <p class="hint">
+              <strong>不會打包成 zip</strong>：手機／平板按下去會開系統的分享面板（iOS 可以一次
+              「儲存 N 張影像」到照片），電腦會請你選一個資料夾直接寫檔；兩個都不支援的瀏覽器才會
+              打包成一個 zip 下載。「壓縮圖」跟備份匯出用同一組設定（短邊至少 700px、JPEG、目標壓到原本的 1/3）。
+            </p>
+            <div class="head-actions">
+              <button
+                class="btn"
+                :class="{ 'is-busy': imagesBusy }"
+                :aria-disabled="imagesBusy"
+                @click="exportImages(false)"
+              >
+                匯出原圖
+              </button>
+              <button
+                class="btn btn-primary"
+                :class="{ 'is-busy': imagesBusy }"
+                :aria-disabled="imagesBusy"
+                @click="exportImages(true)"
+              >
+                匯出壓縮圖
+              </button>
+            </div>
+          </section>
+
+          <!-- QR CODE 傳輸：用螢幕與鏡頭把完整備份傳給另一台裝置
+               （decimen 光學傳輸，已整合進這個 App，見 src/components/DecimenPanel.vue） -->
+          <section class="io-item">
+            <div class="io-head">
+              <h3>QR CODE 傳輸</h3>
+              <span class="io-tag">螢幕 → 鏡頭，不用網路</span>
+            </div>
+            <p class="hint">
+              兩台裝置都開這個 App（同一個 https 網址），一台按「<strong>QR CODE 匯出</strong>」讓畫面變成動畫 QR，
+              另一台按「<strong>QR CODE 匯入</strong>」用鏡頭掃，收完會<strong>自動匯入</strong>。
+              <strong>中間完全不需要網路</strong>，資料是用螢幕的光傳過去的，不會上傳到任何伺服器。
+            </p>
+            <p class="hint">
+              傳的是<strong>完整備份（含圖片）</strong>：圖片越多要傳越久（實測大約每秒 200KB，
+              10MB 大概 50 秒）。畫面調到最亮、兩台拿穩、距離 15～30 公分最順。
+              <strong>相機只在 https 或 localhost 提供</strong>，用區域網的 <code>http://192.168.x.x</code> 開時不能掃。
+            </p>
+            <div class="head-actions">
+              <button
+                class="btn btn-primary"
+                :class="{ 'is-busy': qrBusy }"
+                :aria-disabled="qrBusy"
+                @click="qrExport"
+              >
+                QR CODE 匯出
+              </button>
+              <button class="btn" :class="{ 'is-busy': qrBusy }" :aria-disabled="qrBusy" @click="qrImport">
+                QR CODE 匯入
+              </button>
+            </div>
+            <p v-if="qrStatus" class="notice">
+              {{ qrStatus }}
+              <button type="button" class="link" @click="qrStatus = ''">知道了</button>
+            </p>
+          </section>
         </div>
-        <p class="hint">
-          兩台裝置都開這個 App（同一個 https 網址），一台按「<strong>QR CODE 匯出</strong>」讓畫面變成動畫 QR，
-          另一台按「<strong>QR CODE 匯入</strong>」用鏡頭掃，收完會<strong>自動匯入</strong>。
-          <strong>中間完全不需要網路</strong>，資料是用螢幕的光傳過去的，不會上傳到任何伺服器。
-        </p>
-        <p class="hint">
-          傳的是<strong>完整備份（含圖片）</strong>：圖片越多要傳越久（實測大約每秒 200KB，
-          10MB 大概 50 秒）。畫面調到最亮、兩台拿穩、距離 15～30 公分最順。
-          <strong>相機只在 https 或 localhost 提供</strong>，用區域網的 <code>http://192.168.x.x</code> 開時不能掃。
-        </p>
-        <div class="head-actions">
-          <button
-            class="btn btn-primary"
-            :class="{ 'is-busy': qrBusy }"
-            :aria-disabled="qrBusy"
-            @click="qrExport"
-          >
-            QR CODE 匯出
-          </button>
-          <button class="btn" :class="{ 'is-busy': qrBusy }" :aria-disabled="qrBusy" @click="qrImport">
-            QR CODE 匯入
-          </button>
-        </div>
-        <p v-if="qrStatus" class="notice">
-          {{ qrStatus }}
-          <button type="button" class="link" @click="qrStatus = ''">知道了</button>
-        </p>
-        <p class="hint">
-          傳輸介面用的是
-          <a href="https://github.com/bashalarmistalt/decimen-optical-transfer" target="_blank" rel="noopener"
-            >Decimen Optical Transfer</a
-          >
-          v0.5.3（AGPL-3.0-or-later，版權 Evan Crawley／Bash Alarmist），程式放在 <code>src/decimen/</code>，
-          授權全文與第三方聲明也在那裡。
-        </p>
       </section>
 
       <!-- 匯出前的檢查：預設要檢查，關掉之後就不會擋 -->
@@ -3521,8 +3525,9 @@ onUnmounted(() => {
           </summary>
           <div class="fold-body">
             <p class="hint">
-              勾選＝這個欄位一定要填。下面的 <strong>N選M 群組</strong>則是「這幾個欄位裡至少要有 N 個」，
-              例如付款時間與備注「二選一」。同一個欄位可以放進多個群組，但<strong>要先在上面勾選</strong>
+              勾選＝這個欄位一定要填（<strong>預設五個都勾</strong>）。下面的 <strong>N選M 群組</strong>則是
+              「這幾個欄位裡至少要有 N 個」，例如付款時間與備注「二選一」——<strong>預設沒有群組</strong>，
+              要自己按下面的按鈕加。同一個欄位可以放進多個群組，但<strong>要先在上面勾選</strong>
               才能選進群組；被群組用到的欄位就由群組決定要填幾個。
             </p>
 
@@ -3670,19 +3675,6 @@ onUnmounted(() => {
           <li><span>離線可用</span><strong>{{ offlineReady ? '是' : '重新載入一次就會好' }}</strong></li>
           <li><span>授權</span><strong>AGPL-3.0-or-later</strong></li>
         </ul>
-        <p class="hint">
-          手機上打開時如果建置時間跟電腦看到的不一樣，就按上面的「檢查更新並重新載入」。
-        </p>
-        <p class="hint">
-          這個 App 是開放原始碼的：程式碼在
-          <a href="https://github.com/vincentwongmax/payments" target="_blank" rel="noopener">GitHub</a>，
-          授權全文在專案的 <code>LICENSE</code>（AGPL-3.0-or-later）。QR CODE 傳輸用的是
-          <a href="https://github.com/bashalarmistalt/decimen-optical-transfer" target="_blank" rel="noopener"
-            >Decimen Optical Transfer</a
-          >
-          v0.5.3（版權 Evan Crawley／Bash Alarmist，同樣是 AGPL），授權與第三方聲明另外放在
-          <code>src/decimen/</code>。
-        </p>
       </section>
     </div>
 
@@ -4372,6 +4364,65 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+/* 「匯出與傳輸」：一張卡片裡放三種帶資料出去的方式 */
+.io-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.io-item {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+
+.io-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.io-head h3 {
+  font-size: 14px;
+  letter-spacing: 0;
+}
+
+.io-tag {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+/* 每一組裡面的段落自己抓間距（.hint 本身沒有下邊界） */
+.io-item .hint + .hint {
+  margin-top: 8px;
+}
+
+.io-item .head-actions {
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+@media (max-width: 560px) {
+  .io-item {
+    padding: 12px;
+  }
+
+  .io-item .head-actions .btn {
+    flex: 1 1 auto;
+  }
 }
 
 .inline-field {

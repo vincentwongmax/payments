@@ -26,7 +26,28 @@ export const fieldName = (key) => EXPORT_FIELDS.find((f) => f.key === key)?.name
 
 export const DEFAULT_EXPORT_RULES = {
   checked: [...FIELD_KEYS],
-  groups: [{ id: 'default-group', fields: ['paidAt', 'note'], min: 1 }],
+  /* 預設沒有 N選M 群組：上面勾了什麼就每一欄都要填 */
+  groups: [],
+}
+
+/*
+ * 舊版的預設值會自動塞一個「付款時間或備注」二選一的群組，它的 id 固定是
+ * default-group。現在預設是「勾選的欄位每一欄都要填、沒有任何群組」，所以如果
+ * 存下來的正好是那個原封不動的舊預設，就不再把它帶回來。
+ * 判斷要同時比對 id 與內容：自己新增的群組 id 是亂數、改過 min 或勾選的也會被留下來。
+ */
+function isLegacyDefaultGroup(rules) {
+  if (rules.checked.length !== FIELD_KEYS.length) return false
+  if (!FIELD_KEYS.every((key) => rules.checked.includes(key))) return false
+  if (rules.groups.length !== 1) return false
+  const [g] = rules.groups
+  return (
+    g.id === 'default-group' &&
+    Number(g.min) === 1 &&
+    g.fields.length === 2 &&
+    g.fields.includes('paidAt') &&
+    g.fields.includes('note')
+  )
 }
 
 /** 這個欄位填了沒 */
@@ -94,6 +115,8 @@ export function normalizeRules(saved) {
     const min = Math.min(Math.max(1, Number(raw?.min) || 1), fields.length)
     groups.push({ id: raw?.id || uid(), fields, min })
   }
+  /* 存下來的就是舊版那個預設群組 → 換成新預設（沒有群組） */
+  if (isLegacyDefaultGroup({ checked, groups })) return { checked, groups: [] }
   return { checked, groups }
 }
 
