@@ -16,3 +16,7 @@ npm-debug.log*
 
 # 例外：App 自己的圖示要進版控（加到主畫面用）
 !public/icons/*.png
+
+# decimen 的官方發行檔（下載來核對用，不進版控）。
+# 實際用到的檔案已經放進 src/decimen/runtime/，授權與聲明在 src/decimen/。
+decimen-v0.5.3/

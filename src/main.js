@@ -41,15 +41,25 @@ if (import.meta.env.PROD && 'serviceWorker' in navigator) {
        * 第一次打開時 Service Worker 還沒接管這一頁，這頁抓過的檔案不是它抓的，
        * 所以不會進快取（例如 tesseract.js 那個動態載入的 chunk）。
        * 把這一頁用過的站內檔案清單交給它補齊，第二次開始（就算沒網路）才開得起來。
-       * QR CODE 傳輸那兩個頁面用不到就先抓下來，之後完全沒網路也能做光學傳輸。
+       * QR CODE 傳輸的程式（decimen，見 src/decimen/runtime）是動態載入的，
+       * 這一頁不一定抓過，所以也一起列進去，之後完全沒網路也能做光學傳輸。
        */
+      const decimenFiles = [
+        'dialog-BCNB4hJ8.js',
+        'send-Bd5Iw8X4.js',
+        'receive-CLE1NPaP.js',
+        'worker-CAMEZaVI.js',
+        'wake-lock-BlIwRfLh.js',
+        'share-dialog-B4uABdxi.js',
+        'en-AmUQa68W.js',
+        'decimen_codec-CbthSiej.wasm',
+      ]
       const urls = [
         ...performance
           .getEntriesByType('resource')
           .map((entry) => entry.name)
           .filter((url) => url.startsWith(location.origin)),
-        new URL('decimen/sender.html', document.baseURI).href,
-        new URL('decimen/receiver.html', document.baseURI).href,
+        ...decimenFiles.map((name) => new URL(`decimen-rt/${name}`, document.baseURI).href),
       ]
       if (reg.active && urls.length) reg.active.postMessage({ type: 'warm', urls })
     } catch {

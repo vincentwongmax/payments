@@ -1,6 +1,6 @@
 /* 純邏輯自我檢查：node test/run.js */
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import {
   extFromMime,
   fileToStored,
@@ -46,6 +46,7 @@ import {
   restoreMissingPersons,
 } from '../src/lib/persons.js'
 import { md5Hex } from '../src/lib/md5.js'
+import { scopeCss, scopeSelector } from '../src/decimen/scopeCss.js'
 import { datePart, imageExportName, uniqueExportName } from '../src/lib/imageExport.js'
 import { crc32, zipStore } from '../src/lib/zip.js'
 import { fromBackup, mergeRecords, remapRecords, resolvePersons, toBackup } from '../src/lib/backup.js'
@@ -1254,5 +1255,94 @@ const sw = readRoot('public/sw.js')
 assert.match(sw, /addEventListener\('fetch'/, 'Service Worker 要有 fetch 處理')
 assert.match(sw, /traineddata/, 'Service Worker 不該快取語言模型（tesseract 自己存 IndexedDB）')
 assert.match(sw, /new Response\(/, '存進快取前要重新包成乾淨的回應，否則 gzip 標頭會讓 script 載入失敗')
+
+/*
+ * ---------- QR CODE 傳輸：decimen（AGPL）整合進 src/decimen ----------
+ *
+ * decimen 用的是「已建置」的檔案，檔名帶雜湊、彼此用相對路徑互找，所以由
+ * vite.config.js 的 decimen-runtime 外掛原封不動供應在 /decimen-rt/。
+ * 面板（DecimenPanel.vue）則是用 document.getElementById 去綁的那份介面，
+ * 少一個 id，runtime 會在模組層直接丟例外、整個 QR 傳輸不能用。
+ * 這裡把「runtime 要哪些 id」跟「面板給了哪些 id」對起來，避免以後改壞。
+ */
+const RUNTIME_FILES = [
+  'dialog-BCNB4hJ8.js',
+  'send-Bd5Iw8X4.js',
+  'receive-CLE1NPaP.js',
+  'worker-CAMEZaVI.js',
+  'wake-lock-BlIwRfLh.js',
+  'share-dialog-B4uABdxi.js',
+  'en-AmUQa68W.js',
+  'decimen_codec-CbthSiej.wasm',
+  'dialog-lwSt6g5n.css',
+]
+for (const file of RUNTIME_FILES) {
+  assert.ok(existsSync(new URL(`src/decimen/runtime/${file}`, root)), `QR 傳輸要用到 src/decimen/runtime/${file}`)
+}
+for (const file of ['src/decimen/LICENSE', 'src/decimen/NOTICE']) {
+  assert.ok(existsSync(new URL(file, root)), `AGPL 的授權與聲明要留著：${file}`)
+}
+/* 舊的獨立頁面已經整個移除，不該再出現在 public/ */
+for (const file of ['public/decimen', 'public/decimen/sender.html', 'public/decimen/receiver.html']) {
+  assert.ok(!existsSync(new URL(file, root)), `舊的 QR 靜態頁面應該已經刪掉：${file}`)
+}
+/* 只留英文語系（面板是英文介面），其他語系檔不一起放 */
+const locales = readdirSync(new URL('src/decimen/runtime', root)).filter(
+  (f) => !/^(dialog|send|receive|worker|wake-lock|share-dialog|en-|decimen_codec)/.test(f),
+)
+assert.deepEqual(locales, [], `src/decimen/runtime 不該有預期外的檔案（例如其他語系）：${locales.join(', ')}`)
+
+/* runtime 需要的每一個 id，面板都要有 */
+const panel = readRoot('src/components/DecimenPanel.vue')
+const runtimeIds = new Set()
+for (const file of RUNTIME_FILES.filter((f) => f.endsWith('.js'))) {
+  const src = readRoot(`src/decimen/runtime/${file}`)
+  for (const m of src.matchAll(/getElementById\("([^"]+)"\)/g)) runtimeIds.add(m[1])
+}
+assert.ok(runtimeIds.size > 20, `應該抓到一堆 runtime 需要的 id（實際 ${runtimeIds.size} 個）`)
+const missing = [...runtimeIds].filter((id) => !panel.includes(`id="${id}"`))
+assert.deepEqual(missing, [], `DecimenPanel.vue 少了 runtime 要的 id：${missing.join(', ')}`)
+
+/* 面板不能把 decimen 的標記拆掉（runtime 只在載入時綁一次 DOM） */
+assert.match(panel, /id="decimen-app"/, '面板要有被 CSS 限定的根節點 #decimen-app')
+assert.ok(
+  !/<(main|section|div)[^>]*\bid="decimen-app"[^>]*\bv-(if|show)\b/.test(panel),
+  'decimen 的根節點不能用 v-if／v-show，只能用 CSS 切換顯示',
+)
+assert.match(panel, /virtual:decimen-css/, '面板要載入被限定過的 decimen 樣式')
+/* 分享接收端連結是連到 decimen.app 的功能，這裡不做，要把按鈕拿掉 */
+assert.match(panel, /button\.text-button/, '要把「分享接收端連結」按鈕拿掉')
+/* App 不該再引用舊的靜態頁面或 Cache API 交接 */
+const app = readRoot('src/App.vue')
+assert.ok(!/public\/decimen/.test(app), 'App.vue 不該再提到 public/decimen')
+assert.ok(!/qr-handoff|decimenUrl\(/.test(app), 'App.vue 不該再有舊的 Cache API／開分頁交接')
+const main = readRoot('src/main.js')
+assert.ok(!/decimen\/(sender|receiver)\.html/.test(main), 'main.js 不該再預熱舊的 QR 靜態頁面')
+assert.match(main, /decimen-rt\//, 'main.js 要改成預熱新的 runtime 檔案（離線也能傳）')
+
+/* ---------- decimen 全域 CSS 的限定（縮進 #decimen-app） ---------- */
+assert.equal(scopeSelector('*'), '#decimen-app *')
+assert.equal(scopeSelector('html'), '#decimen-app')
+assert.equal(scopeSelector('body'), '#decimen-app')
+assert.equal(scopeSelector(':root'), '#decimen-app')
+assert.equal(scopeSelector('button'), '#decimen-app button')
+assert.equal(scopeSelector('.send-shell'), '#decimen-app .send-shell')
+assert.equal(scopeSelector('.receiver-page .site-header'), '#decimen-app .site-header')
+/* 逗號分隔的一串（跟 postcss 一樣會一個一個處理） */
+assert.equal(
+  scopeCss('.home-page,.tool-page,.receiver-page{flex:1}'),
+  '#decimen-app, #decimen-app, #decimen-app{flex:1}',
+)
+/* 全螢幕狀態掛在真正的 body 上，這一段一定要留著 body 當開頭 */
+assert.equal(scopeSelector('body.qr-full'), 'body.qr-full #decimen-app')
+assert.equal(scopeSelector('body.qr-full .send-shell'), 'body.qr-full #decimen-app .send-shell')
+assert.equal(scopeSelector('body.qr-full #stage[hidden]'), 'body.qr-full #decimen-app #stage[hidden]')
+/* @media 要往下遞迴、@keyframes 的影格不能加前綴 */
+const scoped = scopeCss(
+  '@media (max-width:600px){.a{color:red}}@keyframes spin{0%{opacity:0}100%{opacity:1}}.b{color:blue}',
+)
+assert.match(scoped, /@media \(max-width:600px\)\{#decimen-app \.a\{color:red\}\}/)
+assert.match(scoped, /@keyframes spin\{0%\{opacity:0\}100%\{opacity:1\}\}/)
+assert.match(scoped, /#decimen-app \.b\{color:blue\}/)
 
 console.log('test/run.js: 全部通過')

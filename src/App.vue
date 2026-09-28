@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import RecordCard from './components/RecordCard.vue'
+import DecimenPanel from './components/DecimenPanel.vue'
 import { addAlias, blobToBase64, fromBackup, mergeRecords, normalizeName, remapRecords, resolvePersons, toBackup } from './lib/backup.js'
 import { clear, del, getAll, put, wipe } from './lib/db.js'
 import { compressImage, extFromMime, fileToStored, heicToJpeg, isHeic, readImageTime, sniffImageType, storedToFile } from './lib/image.js'
@@ -729,7 +730,7 @@ const isAdmin = (() => {
 /*
  * 自己的資料有多大：只算使用者真的放進來的東西——
  * 每一筆記錄的圖片（主圖＋附加圖片）與文字欄位的概略大小，
- * 不含 OCR 語言包、decimen 那兩頁的快取與其他系統檔案。
+ * 不含 OCR 語言包、decimen 光學傳輸的程式與其他系統檔案。
  */
 const ownUsage = computed(() => {
   let images = 0
@@ -2717,91 +2718,42 @@ async function exportImages(compress) {
   }
 }
 
-/* ---------- QR CODE 傳輸（decimen 光學傳輸，頁面在 public/decimen/） ---------- */
+/* ---------- QR CODE 傳輸（decimen 光學傳輸，整合在 src/components/DecimenPanel.vue） ---------- */
 /*
  * 兩台裝置用「螢幕 + 鏡頭」傳備份，中間不需要網路：
- *   發送方：按「QR CODE 匯出」→ 我們把備份檔放進 Cache API（qr-handoff），
- *           再開 public/decimen/sender.html，那一頁的橋接會自己把檔案塞進它的檔案選擇器。
- *   接收方：按「QR CODE 匯入」→ 開 public/decimen/receiver.html 用鏡頭掃，
- *           掃完那一頁的橋接會把收到的檔案放回 Cache API、通知我們，然後自己關掉（＝自動返回）。
+ *   發送方：按「QR CODE 匯出」→ 我們把備份檔做好，直接交給面板裡 decimen 的檔案欄位，
+ *           同一頁就開始播動畫 QR（以前是開新分頁，現在整塊介面就在 App 裡面）。
+ *   接收方：按「QR CODE 匯入」→ 面板切到掃描畫面，收到檔案後面板會把檔案丟回來給我們匯入。
  *
- * 為什麼要繞 Cache API：兩個分頁同源，但分頁可能被瀏覽器凍結（背景分頁的計時器會被節流），
- * 所以由「看得見的那一頁」自己來拿，最穩。
+ * 因為兩邊在同一個頁面、同一個 JS 環境，就不用再繞 Cache API 交接了。
  */
-const QR_CACHE = 'qr-handoff'
 const qrBusy = ref(false)
 const qrStatus = ref('')
-/* 按過「QR CODE 匯入」之後才需要去接檔案（沒有按就不要亂匯入別的東西） */
-const qrPending = ref(false)
-let qrImporting = false
+const qrPanel = ref(null)
 
-const decimenUrl = (page) => new URL(`decimen/${page}.html`, location.href).href
-/* 相機與 Cache API 都只在安全來源提供（https 或 localhost） */
-const qrSecure = () => !!window.isSecureContext && typeof caches !== 'undefined'
+/* 相機只在安全來源提供（https 或 localhost） */
+const qrSecure = () => !!window.isSecureContext
 
 const qrSecureWarn = () =>
   warn(
     '這個網址不能用 QR 傳輸',
-    'QR 傳輸要用相機（還有離線快取），瀏覽器只在 https 或 localhost 提供。' +
+    'QR 傳輸要用相機，瀏覽器只在 https 或 localhost 提供。' +
       `目前是 ${location.origin}，請改用 GitHub Pages 的 https 網址，或在電腦上用 localhost 測。`,
   )
 
-async function qrHandoffPut(mark, file) {
-  const cache = await caches.open(QR_CACHE)
-  await cache.put(
-    new Request(new URL(mark, location.href).href),
-    new Response(file, {
-      headers: {
-        'content-type': file.type || 'application/octet-stream',
-        /* header 只吃 Latin-1，中文檔名要先編碼（讀的時候解回來） */
-        'x-file-name': encodeURIComponent(file.name),
-      },
-    }),
-  )
-}
-
-async function qrHandoffTake(mark) {
-  const cache = await caches.open(QR_CACHE)
-  const key = (await cache.keys()).find((k) => k.url.includes(mark))
-  if (!key) return null
-  const res = await cache.match(key)
-  await cache.delete(key)
-  if (!res) return null
-  const blob = await res.blob()
-  const raw = res.headers.get('x-file-name') || ''
-  let name = 'received.json'
-  try {
-    name = decodeURIComponent(raw) || name
-  } catch {
-    name = raw || name
-  }
-  return new File([blob], name, { type: blob.type || 'application/json' })
-}
-
 /**
  * QR CODE 匯出：這台把畫面變成動畫 QR 給對方掃。
- * 分頁一定要在「使用者點擊的當下」開（iOS 會擋延後才開的彈出視窗），
- * 所以先開分頁，再去準備備份檔（圖片壓縮要時間）並放進 Cache API。
+ * 先開面板（使用者手勢當下就切過去），再去準備備份檔（圖片壓縮要時間）。
  */
 function qrExport() {
   if (qrBusy.value) return
   if (!qrSecure()) return qrSecureWarn()
   if (!records.value.length) return warn('還沒有記錄', '目前沒有任何付款記錄可以傳。')
 
-  /* 匯出前的必填檢查跟「匯出」一樣；有缺就停下來（用同步版，才來得及先開分頁） */
+  /* 匯出前的必填檢查跟「匯出」一樣；有缺就停下來 */
   const bad = incompleteRecords()
   if (bad.length) {
     warnIncomplete(bad)
-    return
-  }
-
-  const popup = window.open(decimenUrl('sender'), '_blank')
-  if (!popup) {
-    warn(
-      '新分頁被擋下來了',
-      '瀏覽器不讓 App 開新分頁（彈出視窗被擋）。請允許這個網站開啟彈出視窗再試一次；' +
-        '不然也可以用「匯出」下載備份檔，自己在別的裝置上傳。',
-    )
     return
   }
 
@@ -2810,72 +2762,39 @@ function qrExport() {
   ;(async () => {
     try {
       const file = await buildBackupFile()
-      await qrHandoffPut('qr-handoff/payload', file)
+      await qrPanel.value?.sendFile(file)
       qrStatus.value =
         `已把「${file.name}」（${(file.size / 1048576).toFixed(1)} MB）交給 QR 畫面：` +
         '請把這台手機亮度調到最亮、兩台都拿穩，讓對方掃這個畫面。'
-      backupNotice.value = qrStatus.value
     } catch (e) {
       qrStatus.value = `準備備份檔失敗：${e?.message ?? e}`
-      backupNotice.value = qrStatus.value
     } finally {
       qrBusy.value = false
     }
   })()
 }
 
-/** QR CODE 匯入：開掃描畫面；對方掃完那一頁會把檔案交回來並自己關掉 */
-function qrImport() {
-  if (qrBusy.value) return
+/** QR CODE 匯入：開掃描畫面；面板收到檔案後會自己把檔案交回來（見 onQrReceived） */
+async function qrImport() {
   if (!qrSecure()) return qrSecureWarn()
-  const popup = window.open(decimenUrl('receiver'), '_blank')
-  if (!popup) {
-    warn(
-      '新分頁被擋下來了',
-      '瀏覽器不讓 App 開新分頁（彈出視窗被擋），請允許這個網站開啟彈出視窗再試一次。',
-    )
-    return
+  try {
+    await qrPanel.value?.receive()
+    qrStatus.value = '掃描中：把鏡頭對準對方手機上的 QR 動畫（距離 15～30 公分）'
+  } catch (e) {
+    qrStatus.value = `開啟掃描畫面失敗：${e?.message ?? e}`
   }
-  qrPending.value = true
-  qrStatus.value =
-    '已開啟掃描畫面：把鏡頭對準對方手機上的 QR 動畫（距離 15～30 公分），收到後會自動回到這裡並匯入。'
-  backupNotice.value = ''
 }
 
-/** 有收到檔案就匯入（分頁通知我們、或我們回到前景時自己來拿） */
-async function takeQrReceived() {
-  if (qrImporting || !qrPending.value || !qrSecure()) return false
-  let file = null
+/** 面板收到檔案了：關掉面板並匯入 */
+async function onQrReceived(file) {
+  qrStatus.value = `已收到「${file.name}」，開始匯入…`
+  qrPanel.value?.close()
   try {
-    file = await qrHandoffTake('qr-handoff/received')
-  } catch {
-    return false
-  }
-  if (!file) return false
-
-  qrImporting = true
-  qrPending.value = false
-  try {
-    qrStatus.value = `已收到「${file.name}」，開始匯入…`
     await importFiles([file])
     qrStatus.value = backupNotice.value || '已收到並匯入完成'
   } catch (e) {
     qrStatus.value = `匯入失敗：${e?.message ?? e}`
-  } finally {
-    qrImporting = false
   }
-  return true
-}
-
-function onQrMessage(event) {
-  if (event.origin !== location.origin) return
-  if (event.data?.type !== 'payments:qr-received') return
-  takeQrReceived()
-}
-
-/* 分頁關掉、回到我們這一頁時再確認一次（訊息真的沒送到也有機會補上） */
-function onQrVisible() {
-  if (document.visibilityState === 'visible') takeQrReceived()
 }
 
 const alignDialogEl = ref(null)
@@ -3105,10 +3024,6 @@ onMounted(async () => {
   window.addEventListener('popstate', onPopState)
   /* 點空白的地方＝取消選取那一筆（記錄、表格列與對話框裡的點擊不算） */
   document.addEventListener('click', onPageClick)
-  /* QR CODE 傳輸：掃描分頁收到檔案後會通知我們，或我們回到前景時自己來拿 */
-  window.addEventListener('message', onQrMessage)
-  window.addEventListener('focus', onQrVisible)
-  document.addEventListener('visibilitychange', onQrVisible)
   /* 程式出錯時顯示出來（不然畫面會像「卡住」，要 F5 才知道） */
   window.addEventListener('app-error', onAppError)
   /* 先開背景載入 OCR 引擎，第一次上傳就不用等 */
@@ -3219,9 +3134,6 @@ onMounted(async () => {
 
 onUnmounted(() => {
   payBarObserver?.disconnect()
-  window.removeEventListener('message', onQrMessage)
-  window.removeEventListener('focus', onQrVisible)
-  document.removeEventListener('visibilitychange', onQrVisible)
   document.removeEventListener('paste', onPaste)
   document.removeEventListener('touchstart', onTouchStart)
   document.removeEventListener('touchmove', onTouchMove)
@@ -3543,14 +3455,15 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <!-- QR CODE 傳輸：用螢幕與鏡頭把完整備份傳給另一台裝置（decimen 光學傳輸） -->
+      <!-- QR CODE 傳輸：用螢幕與鏡頭把完整備份傳給另一台裝置
+           （decimen 光學傳輸，已整合進這個 App，見 src/components/DecimenPanel.vue） -->
       <section class="card">
         <div class="card-head card-head-inline">
           <h2>QR CODE 傳輸</h2>
         </div>
         <p class="hint">
           兩台裝置都開這個 App（同一個 https 網址），一台按「<strong>QR CODE 匯出</strong>」讓畫面變成動畫 QR，
-          另一台按「<strong>QR CODE 匯入</strong>」用鏡頭掃，收完會<strong>自動回到這裡並匯入</strong>。
+          另一台按「<strong>QR CODE 匯入</strong>」用鏡頭掃，收完會<strong>自動匯入</strong>。
           <strong>中間完全不需要網路</strong>，資料是用螢幕的光傳過去的，不會上傳到任何伺服器。
         </p>
         <p class="hint">
@@ -3576,12 +3489,12 @@ onUnmounted(() => {
           <button type="button" class="link" @click="qrStatus = ''">知道了</button>
         </p>
         <p class="hint">
-          這兩個畫面是
+          傳輸介面用的是
           <a href="https://github.com/bashalarmistalt/decimen-optical-transfer" target="_blank" rel="noopener"
             >Decimen Optical Transfer</a
           >
-          v0.5.3（AGPL-3.0-or-later，版權 Evan Crawley／Bash Alarmist），只在本檔最後加了一段把檔案自動交給 App 的橋接；
-          授權全文與第三方聲明在專案的 <code>LICENSE</code>、<code>public/decimen/</code>。
+          v0.5.3（AGPL-3.0-or-later，版權 Evan Crawley／Bash Alarmist），程式放在 <code>src/decimen/</code>，
+          授權全文與第三方聲明也在那裡。
         </p>
       </section>
 
@@ -3768,7 +3681,7 @@ onUnmounted(() => {
             >Decimen Optical Transfer</a
           >
           v0.5.3（版權 Evan Crawley／Bash Alarmist，同樣是 AGPL），授權與第三方聲明另外放在
-          <code>public/decimen/</code>。
+          <code>src/decimen/</code>。
         </p>
       </section>
     </div>
@@ -4387,6 +4300,10 @@ onUnmounted(() => {
         </div>
       </form>
     </dialog>
+
+    <!-- QR CODE 傳輸面板：decimen 的介面整份留在 DOM 裡（runtime 只綁一次），
+         沒有開的時候用 CSS 藏起來，見 src/components/DecimenPanel.vue -->
+    <DecimenPanel ref="qrPanel" @received="onQrReceived" />
   </div>
 </template>
 

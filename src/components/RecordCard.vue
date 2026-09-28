@@ -71,6 +71,14 @@ function onAmountInput(event) {
   r.value.amount = clean
 }
 
+/* 清空金額（欄位右邊的小 ×）；清完把游標留在欄位裡，方便直接重打 */
+const amountInputEl = ref(null)
+function clearAmount() {
+  if (locked.value) return
+  r.value.amount = ''
+  amountInputEl.value?.focus()
+}
+
 /* 手動新增的記錄補圖片用（可以一次選多張） */
 const pickEl = ref(null)
 function onPickFile(event) {
@@ -502,14 +510,39 @@ function toggleBeneficiary(id) {
 
         <label class="field" :class="{ 'needs-field': miss('amount') }">
           <span class="lbl">付款多少錢{{ r.currency ? `（${r.currency}）` : '' }}</span>
-          <input
-            :value="r.amount"
-            class="input amount"
-            inputmode="decimal"
-            placeholder="0.00"
-            :disabled="locked"
-            @input="onAmountInput"
-          />
+          <span class="amount-slot">
+            <input
+              ref="amountInputEl"
+              :value="r.amount"
+              class="input amount"
+              inputmode="decimal"
+              placeholder="0.00"
+              :disabled="locked"
+              @input="onAmountInput"
+            />
+            <!-- 清空金額：固定出現的小圖示，按了把金額清成空白（鎖定時不給按） -->
+            <button
+              type="button"
+              class="amount-clear-btn"
+              :disabled="locked || !String(r.amount ?? '').length"
+              title="清空金額"
+              aria-label="清空金額"
+              @click="clearAmount"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width="15"
+                height="15"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.4"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M6 6l12 12M18 6L6 18" />
+              </svg>
+            </button>
+          </span>
         </label>
 
         <div class="field note-field" :class="{ 'needs-field': miss('note') }">
@@ -762,14 +795,16 @@ function toggleBeneficiary(id) {
 /* 鎖定時欄位是灰的、不能打字，但要看得出內容 */
 .rec.locked .input:disabled,
 .rec.locked .time-pick-btn:disabled,
-.rec.locked .note-pick-btn:disabled {
+.rec.locked .note-pick-btn:disabled,
+.rec.locked .amount-clear-btn:disabled {
   color: var(--muted);
   background: var(--surface);
   opacity: 0.75;
 }
 
 .rec.locked .time-pick-btn:disabled,
-.rec.locked .note-pick-btn:disabled {
+.rec.locked .note-pick-btn:disabled,
+.rec.locked .amount-clear-btn:disabled {
   background: transparent;
 }
 
@@ -980,6 +1015,46 @@ function toggleBeneficiary(id) {
   color: var(--muted);
   font-size: 12px;
   font-weight: 550;
+}
+
+/* 付款多少錢：輸入框（右邊內嵌一個清空金額的小 ×），寬度跟其他欄位一樣 */
+.amount-slot {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+
+.amount-slot .amount {
+  width: 100%;
+  padding-right: 40px;
+}
+
+.amount-clear-btn {
+  position: absolute;
+  top: 50%;
+  right: 5px;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.amount-clear-btn:hover:not(:disabled) {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* 沒有金額可清（或鎖定）時還是看得到，只是變淡、按不動 */
+.amount-clear-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 /* 備注：輸入框（右邊內嵌一個打開常用分類的圖示按鈕），寬度跟其他欄位一樣 */

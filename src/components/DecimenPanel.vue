@@ -1,0 +1,610 @@
+<script setup>
+/*
+ * QR CODE 傳輸面板：把 decimen 光學傳輸（AGPL-3.0-or-later，見 src/decimen/LICENSE）
+ * 直接掛進這個 App 裡，不再開新分頁、也不再放 public/ 的獨立 HTML。
+ *
+ * 這裡有兩件事要特別注意：
+ *
+ * 1. 下方的 HTML **不是**普通的樣板。decimen 的 runtime 是用 document.getElementById()
+ *    直接綁 DOM，而且只在模組第一次載入時綁一次，所以：
+ *      - 整份標記必須一直留在 DOM 裡（不能 v-if 拆掉），面板只用 CSS 切換顯示；
+ *      - 標記本身完全不綁 Vue（不加 :class、不用 v-show），免得 Vue 跟 runtime
+ *        互相覆蓋同一批屬性或 style。要切換的只有最外層我自己的 .dt-root。
+ *    需要的 id 一個都不能少，少一個 runtime 會在模組層就丟例外。
+ *
+ * 2. runtime 的檔案（JS chunk + wasm）因為檔名帶著建置雜湊、而且彼此用相對路徑互找，
+ *    所以由 vite.config.js 的 decimen-runtime 外掛原封不動地供應在 /decimen-rt/ 底下。
+ */
+import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+/* decimen 的樣式（已經被外掛縮進 #decimen-app，不會汙染本來的 App） */
+import decimenCss from 'virtual:decimen-css'
+
+const emit = defineEmits(['received', 'close'])
+
+const open = ref(false)
+const mode = ref('send')
+const status = ref('')
+const failed = ref('')
+
+/* runtime 只載入一次；兩份 entry 各自對應一半的介面 */
+let loaded = null
+let cssInjected = false
+
+const runtimeUrl = (name) => new URL(`decimen-rt/${name}`, document.baseURI).href
+
+async function loadRuntime() {
+  if (loaded) return loaded
+  loaded = (async () => {
+    if (!cssInjected) {
+      const style = document.createElement('style')
+      style.dataset.decimen = 'style'
+      style.textContent = decimenCss
+      document.head.append(style)
+      cssInjected = true
+    }
+    /*
+     * 面板只留英文：decimen 用 <html data-i18n-static> 當「這一頁已經是哪個語言」的
+     * 依據，設成 en 就不會再去載入其他語系檔（那些檔案我們沒有一起放進來）。
+     * 順手把「換語言」提示關掉，免得瀏覽器是中文時它去要一個不存在的語系檔。
+     */
+    document.documentElement.dataset.i18nStatic = 'en'
+    try {
+      localStorage.setItem('decimen:locale-banner-dismissed', '1')
+    } catch {
+      /* 無痕模式擋 localStorage 就算了，不影響 */
+    }
+    /* decimen 會把 <html lang> 改成它自己的語言，載入完要還原成本頁原本的 */
+    const pageLang = document.documentElement.lang
+    await Promise.all([
+      import(/* @vite-ignore */ runtimeUrl('send-Bd5Iw8X4.js')),
+      import(/* @vite-ignore */ runtimeUrl('receive-CLE1NPaP.js')),
+    ])
+    if (pageLang) document.documentElement.lang = pageLang
+  })().catch((e) => {
+    /* 載入失敗（例如第一次真的沒網路）就別把失敗的 promise 一直留著，下次再試 */
+    loaded = null
+    throw e
+  })
+  return loaded
+}
+
+async function ensureLoaded() {
+  try {
+    await loadRuntime()
+  } catch (e) {
+    failed.value = `QR 傳輸程式載入失敗：${e?.message ?? e}`
+    throw e
+  }
+}
+
+async function show(which) {
+  mode.value = which
+  open.value = true
+  failed.value = ''
+  status.value = ''
+  await nextTick()
+  await ensureLoaded()
+}
+
+/**
+ * 匯出：把備份檔交給 decimen 的傳送介面。
+ * decimen 的檔案選擇器是 #cfg-file，用 DataTransfer 直接塞檔案再丟 change，
+ * 等於使用者自己選了那個檔。
+ */
+async function sendFile(file) {
+  await show('send')
+  const radio = document.querySelector('#mode-picker input[value="file"]')
+  if (radio && !radio.checked) {
+    radio.checked = true
+    radio.dispatchEvent(new Event('change', { bubbles: true }))
+  }
+  const input = document.getElementById('cfg-file')
+  if (!input) throw new Error('找不到 decimen 的檔案欄位')
+  const dt = new DataTransfer()
+  dt.items.add(file)
+  input.files = dt.files
+  input.dispatchEvent(new Event('change', { bubbles: true }))
+  status.value = `已把「${file.name}」（${(file.size / 1048576).toFixed(1)} MB）交給傳送畫面`
+}
+
+/** 接收：開掃描介面，收到檔案時由 watchResult 丟出 received */
+async function receive() {
+  await show('receive')
+  status.value = '按「Start camera」開始掃描對方螢幕上的 QR 動畫'
+}
+
+/*
+ * decimen 收到檔案後會把結果寫進 #result，內容是一個帶 download 屬性的連結
+ * （href 是 blob:）。這裡盯著它，一出現就把檔案接過來交給 App 匯入。
+ */
+let observer = null
+let taking = false
+
+async function takeResult(link) {
+  taking = true
+  const name = link.getAttribute('download') || 'received.json'
+  try {
+    const blob = await (await fetch(link.href)).blob()
+    const file = new File([blob], name, { type: blob.type || 'application/json' })
+    status.value = `已收到「${name}」，開始匯入…`
+    emit('received', file)
+  } catch (e) {
+    failed.value = `收下檔案失敗：${e?.message ?? e}`
+  } finally {
+    taking = false
+  }
+}
+
+function watchResult() {
+  const result = document.getElementById('result')
+  if (!result || observer) return
+  observer = new MutationObserver(() => {
+    if (taking) return
+    /* 一次收到多個連結時只匯入第一個；全部先標記，免得又被掃一次 */
+    const links = [...result.querySelectorAll('a.download:not([data-taken])')]
+    if (!links.length) return
+    for (const link of links) link.dataset.taken = '1'
+    takeResult(links[0])
+  })
+  observer.observe(result, { childList: true, subtree: true })
+}
+
+/*
+ * 傳送中的狀態列（#specs）decimen 會塞一顆「Share receiver link」按鈕進去，
+ * 那是連到 decimen.app 的接收頁、順便開分享對話框用的；這個 App 不做這件事
+ * （兩台都開同一個 App，不需要分享連結），所以按鈕一出現就拿掉。
+ * 拿掉之後尾巴會留下一個孤零零的破折號，一起收乾淨。
+ */
+let specsObserver = null
+
+function tidySpecs() {
+  const specs = document.getElementById('specs')
+  if (!specs) return
+  for (const btn of specs.querySelectorAll('button.text-button')) btn.remove()
+  const last = specs.lastChild
+  if (last?.nodeType === Node.TEXT_NODE && /^[\s—–-]+$/.test(last.textContent ?? '')) last.textContent = ''
+}
+
+function watchSpecs() {
+  const specs = document.getElementById('specs')
+  if (!specs || specsObserver) return
+  specsObserver = new MutationObserver(tidySpecs)
+  specsObserver.observe(specs, { childList: true })
+}
+
+/* 面板關掉時把相機確實關掉（只是 display:none 的話鏡頭會一直亮著） */
+function stopCamera() {
+  const video = document.getElementById('video')
+  const stream = video?.srcObject
+  if (stream?.getTracks) for (const track of stream.getTracks()) track.stop()
+  if (video) video.srcObject = null
+}
+
+async function close() {
+  stopCamera()
+  /* decimen 的說明／分享對話框是 top layer，祖先 display:none 蓋不掉，要自己關 */
+  for (const dialog of document.querySelectorAll('#decimen-app dialog[open]')) dialog.close()
+  open.value = false
+  emit('close')
+}
+
+async function setMode(which) {
+  if (mode.value === which) return
+  if (which !== 'receive') stopCamera()
+  mode.value = which
+  await ensureLoaded()
+}
+
+onMounted(() => {
+  watchResult()
+  watchSpecs()
+})
+
+onBeforeUnmount(() => {
+  observer?.disconnect()
+  observer = null
+  specsObserver?.disconnect()
+  specsObserver = null
+  stopCamera()
+})
+
+defineExpose({ sendFile, receive, close })
+</script>
+
+<template>
+  <!-- 外層：永遠留在 DOM 裡，只用 class 切換顯示。
+       decimen 的介面是深色的，這裡就用深色把它包起來。 -->
+  <div class="dt-root" :class="[`mode-${mode}`, { 'is-open': open }]">
+    <div class="dt-bar">
+      <div class="dt-tabs" role="tablist" aria-label="QR CODE 傳輸">
+        <button
+          type="button"
+          class="dt-tab"
+          :class="{ on: mode === 'send' }"
+          role="tab"
+          :aria-selected="mode === 'send'"
+          @click="setMode('send')"
+        >
+          傳送（這台播 QR）
+        </button>
+        <button
+          type="button"
+          class="dt-tab"
+          :class="{ on: mode === 'receive' }"
+          role="tab"
+          :aria-selected="mode === 'receive'"
+          @click="setMode('receive')"
+        >
+          接收（用鏡頭掃）
+        </button>
+      </div>
+      <button type="button" class="dt-close" title="關閉" aria-label="關閉" @click="close">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+          <path d="M6 6l12 12M18 6L6 18" />
+        </svg>
+      </button>
+    </div>
+
+    <p v-if="status" class="dt-status">{{ status }}</p>
+    <p v-if="failed" class="dt-error">{{ failed }}</p>
+
+    <div class="dt-body">
+      <!-- ↓↓↓ decimen 的介面：整份靜態，任何一個 id 都不能少 ↓↓↓ -->
+      <div id="decimen-app">
+        <!-- ===== 傳送（原本的 send/index.html） ===== -->
+        <main class="send-shell">
+          <section class="tool-intro">
+            <p class="eyebrow">Screen → camera</p>
+            <h1 id="tool-title">Send a file</h1>
+            <p>Nothing leaves your device until you scan with a receiver.</p>
+          </section>
+
+          <div class="mode-picker" id="mode-picker" role="radiogroup" aria-label="What to send">
+            <label>
+              <input type="radio" name="send-mode" value="file" checked />
+              <span>File</span>
+            </label>
+            <label>
+              <input type="radio" name="send-mode" value="snippet" />
+              <span>Text snippet</span>
+            </label>
+          </div>
+
+          <label class="file-picker" id="pane-file">
+            <span class="file-picker-button" id="file-picker-button">Select File</span>
+            <span class="file-picker-text" id="file-picker-label">Any file · up to 64 MB</span>
+            <input id="cfg-file" type="file" />
+          </label>
+
+          <!-- 原版的示範 payload 會去 decimen.app 抓圖，這裡不需要；留下容器就好（runtime 會找它） -->
+          <div class="demo-picker" id="pane-demo" hidden>
+            <span>Demo payload</span>
+            <div class="demo-buttons"></div>
+          </div>
+
+          <div class="note-composer" id="pane-snippet" hidden>
+            <label for="snippet-text" id="snippet-label">Text to send</label>
+            <textarea id="snippet-text" rows="7" placeholder="Paste or type anything — a URL, a config, a wall of text…"></textarea>
+            <button id="send-snippet" type="button">Start text stream</button>
+          </div>
+
+          <div class="stage" id="stage" hidden><canvas id="qr" width="16" height="16"></canvas></div>
+
+          <details class="settings">
+            <summary>Transfer settings</summary>
+            <div class="row">
+              <label>
+                <span>tx fps</span>
+                <select id="cfg-fps"><option>10</option><option>15</option><option>20</option><option>24</option><option>30</option><option>55</option><option selected>60</option></select>
+              </label>
+              <label>
+                <span>bytes / frame</span>
+                <select id="cfg-bytes"><option>500</option><option>1000</option><option>1465</option><option>1850</option><option>2331</option><option selected>2953</option></select>
+              </label>
+              <label>
+                <span>error correction</span>
+                <select id="cfg-ecc">
+                  <option selected>L</option><option>M</option><option>Q</option><option>H</option>
+                </select>
+              </label>
+              <label>
+                <span>layout</span>
+                <select id="cfg-grid">
+                  <option value="1" selected>1 code</option><option value="2">2 codes (1×2)</option><option value="4">4 codes (2×2)</option><option value="6">6 codes (2×3)</option>
+                </select>
+              </label>
+              <label>
+                <span>display size</span>
+                <input id="cfg-size" type="range" min="300" max="1200" step="50" value="900" />
+              </label>
+            </div>
+            <dl class="stream-specs" id="stream-specs" hidden>
+              <div><dt>tx rate</dt><dd id="spec-fps">—</dd></div>
+              <div><dt>frame payload</dt><dd id="spec-frame">—</dd></div>
+              <div><dt>qr</dt><dd id="spec-qr">—</dd></div>
+              <div><dt>sending</dt><dd id="spec-payload">—</dd></div>
+              <div><dt>compression</dt><dd id="spec-compression">—</dd></div>
+              <div><dt>fountain blocks</dt><dd id="spec-k">—</dd></div>
+            </dl>
+            <details class="settings subsection" id="export-panel" hidden>
+              <summary>Export animation</summary>
+              <p class="hint">
+                Save this stream as a looping animation file. Embed it in a video or a page —
+                any camera pointed at the playing loop can receive the file.
+              </p>
+              <div class="row">
+                <label>
+                  <span>format</span>
+                  <select id="cfg-export-format">
+                    <option value="apng" selected>APNG</option><option value="zip">PNG sequence (ZIP)</option>
+                  </select>
+                </label>
+                <label>
+                  <span>frame rate</span>
+                  <select id="cfg-export-fps">
+                    <option>5</option><option selected>10</option><option>15</option><option>30</option><option>60</option>
+                  </select>
+                </label>
+                <label>
+                  <span>module scale</span>
+                  <select id="cfg-export-scale">
+                    <option value="1">1×</option><option value="2">2×</option><option value="4" selected>4×</option><option value="8">8×</option>
+                  </select>
+                </label>
+                <label>
+                  <span>cycles</span>
+                  <select id="cfg-export-cycles">
+                    <option>1</option><option selected>2</option><option>3</option><option>4</option><option>5</option>
+                  </select>
+                </label>
+              </div>
+              <p class="hint" id="export-estimate">—</p>
+              <div class="note-actions">
+                <button id="export-start" type="button">Export</button>
+              </div>
+            </details>
+          </details>
+
+          <div class="hint status-line" id="specs">Choose a file to begin</div>
+
+          <!--
+            這個對話框我們沒有做按鈕去開它（沒有要「分享接收端連結」的功能）。
+            但 decimen 的 runtime 在載入時就會去綁 #share-close，少了它整個傳送介面會直接
+            掛掉，所以標記要留著。
+          -->
+          <dialog class="help-dialog share-dialog" id="share-dialog" aria-labelledby="share-title" data-share-title="Decimen Optical Transfer — receiver">
+            <h2 id="share-title" tabindex="-1" autofocus>Share the receiver</h2>
+            <p class="share-hint">Scan this with the other device's camera, or send it the link.</p>
+            <canvas id="share-qr" width="16" height="16"></canvas>
+            <div class="share-url-row">
+              <input id="share-url" readonly value="https://decimen.app/receive/" aria-label="Receiver link" />
+              <button id="share-copy" class="secondary-button" type="button">Copy</button>
+            </div>
+            <div class="note-actions">
+              <button id="share-native" class="secondary-button" type="button" hidden>Share…</button>
+              <button id="share-close" class="secondary-button" type="button">Close</button>
+            </div>
+          </dialog>
+
+          <div class="hint footer-hint" id="footer-hint" hidden>
+            Open Receive on the other device. Turn up this screen's brightness.
+          </div>
+        </main>
+
+        <!-- ===== 接收（原本的 receive/index.html） ===== -->
+        <main class="receiver-shell">
+          <section class="receiver-primary">
+            <div class="receiver-heading">
+              <div>
+                <p class="eyebrow">Camera → your device</p>
+                <h1>Receive</h1>
+              </div>
+              <div class="hint status-line" id="stats">Ready to scan a file or text stream</div>
+            </div>
+            <button id="start">Start camera</button>
+            <div class="preview-zone" id="preview" style="display: none">
+              <div class="no-signal-toast" id="no-signal" role="status" hidden>
+                <span>Nothing happening?</span>
+                <button id="no-signal-help" class="text-button" type="button">Help</button>
+                <button id="no-signal-dismiss" class="text-button no-signal-dismiss" type="button">Dismiss</button>
+              </div>
+              <div class="preview">
+                <video id="video" muted playsinline></video>
+                <canvas id="detect-overlay" class="detect-overlay" aria-hidden="true"></canvas>
+                <div class="transfer-hud">
+                  <div class="progress-status" id="progress-status" style="display: none" aria-live="polite">
+                    <strong id="progress-label">0% · 0 frames</strong>
+                    <span id="eta-label">Estimating time…</span>
+                  </div>
+                  <div
+                    class="progress"
+                    id="progress"
+                    style="display: none"
+                    role="progressbar"
+                    aria-label="Transfer recovery progress"
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                    aria-valuenow="0"
+                  ><div id="bar"></div></div>
+                </div>
+              </div>
+            </div>
+            <div id="result"></div>
+            <dialog class="help-dialog" id="no-signal-dialog" aria-labelledby="no-signal-title">
+              <h2 id="no-signal-title" tabindex="-1" autofocus>Troubleshooting tips</h2>
+              <ul id="no-signal-tips"></ul>
+              <button id="no-signal-close" class="secondary-button" type="button">Got it</button>
+            </dialog>
+            <details class="settings diagnostics" id="diagnostics" style="display: none">
+              <summary>Live diagnostics</summary>
+              <div class="metrics" id="metrics" style="display: none">
+                <div class="metric"><div class="k">capture fps</div><div class="v" id="m-cap">—</div></div>
+                <div class="metric"><div class="k">decode fps</div><div class="v amber" id="m-dec">—</div></div>
+                <div class="metric"><div class="k">goodput</div><div class="v amber" id="m-rate">—</div></div>
+                <div class="metric"><div class="k">elapsed</div><div class="v" id="m-time">—</div></div>
+                <div class="metric"><div class="k">frames new/dup</div><div class="v" id="m-frames">—</div></div>
+                <div class="metric"><div class="k">blocks K</div><div class="v" id="m-k">—</div></div>
+                <div class="metric"><div class="k">block len</div><div class="v" id="m-block">—</div></div>
+                <div class="metric"><div class="k">transfer</div><div class="v" id="m-payload">—</div></div>
+              </div>
+            </details>
+            <details class="settings" id="settings">
+              <summary>Receive settings</summary>
+              <div class="row">
+                <label class="camera-pick"><span>camera</span>
+                  <select id="cfg-camera"><option value="" selected>auto</option></select>
+                </label>
+                <label><span>capture width</span>
+                  <select id="cfg-width"><option>960</option><option selected>1280</option><option>1920</option><option>2560</option><option>3840</option></select>
+                </label>
+                <label><span>capture fps</span>
+                  <select id="cfg-capfps"><option>30</option><option selected>60</option></select>
+                </label>
+                <label><span>decode workers</span>
+                  <select id="cfg-workers"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option></select>
+                </label>
+              </div>
+              <label class="check">
+                <input type="checkbox" id="cfg-autoshow" checked />
+                <span>Show received files automatically</span>
+              </label>
+              <p class="hint settings-actual" id="camera-actual">Applied when the camera starts.</p>
+            </details>
+          </section>
+        </main>
+      </div>
+      <!-- ↑↑↑ decimen 的介面結束 ↑↑↑ -->
+    </div>
+  </div>
+</template>
+
+<style scoped>
+/* 面板本體：固定滿版、深色，蓋在整個 App 上面 */
+.dt-root {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: none;
+  flex-direction: column;
+  background: #070a11;
+  color-scheme: dark;
+}
+
+.dt-root.is-open {
+  display: flex;
+}
+
+/* 頂部：傳送／接收切換 + 關閉 */
+.dt-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 8px 12px;
+  background: #0d1220;
+  border-bottom: 1px solid #1d2740;
+  padding-top: max(8px, env(safe-area-inset-top));
+}
+
+.dt-tabs {
+  display: flex;
+  flex: 1;
+  gap: 6px;
+  min-width: 0;
+}
+
+.dt-tab {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid #24304d;
+  border-radius: 9px;
+  background: transparent;
+  color: #9fb0d0;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.dt-tab.on {
+  background: #16305a;
+  border-color: #3f6fbe;
+  color: #eaf1ff;
+}
+
+.dt-close {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 1px solid #24304d;
+  border-radius: 9px;
+  background: transparent;
+  color: #cbd7ee;
+  cursor: pointer;
+}
+
+.dt-status,
+.dt-error {
+  margin: 0;
+  padding: 8px 14px;
+  font-size: 13px;
+  text-align: center;
+}
+
+.dt-status {
+  background: #0f2036;
+  color: #a8c6f0;
+}
+
+.dt-error {
+  background: #35141a;
+  color: #ffb3bd;
+}
+
+/* 內容區：自己捲動，decimen 那兩頁原本的 100vh 在這裡不需要 */
+.dt-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* decimen 的 body 規則是 100vh，縮進面板後改成自然高度 */
+#decimen-app {
+  min-height: 0;
+  padding: 16px 14px calc(24px + env(safe-area-inset-bottom));
+}
+
+/*
+ * 一次只顯示一半。
+ * decimen 的樣式都被縮進 #decimen-app，等於每條都帶一個 id，所以這裡要一起用
+ * #decimen-app 才壓得過去（只寫 .send-shell 會被 decimen 自己的規則蓋掉）。
+ */
+.dt-root.mode-send #decimen-app > .receiver-shell {
+  display: none;
+}
+
+.dt-root.mode-receive #decimen-app > .send-shell {
+  display: none;
+}
+
+/*
+ * decimen 把 QR 放大到全螢幕時會在自己的 <body> 上掛 qr-full，
+ * 那時候連頂部列一起收掉，整個畫面讓給 QR（點 QR 或按 Esc 可以退出全螢幕）。
+ */
+body.qr-full .dt-bar,
+body.qr-full .dt-status,
+body.qr-full .dt-error {
+  display: none;
+}
+
+body.qr-full .dt-body {
+  overflow: hidden;
+}
+
+body.qr-full #decimen-app {
+  padding: 0;
+}
+</style>

@@ -15,7 +15,7 @@
  * 平常改版不要動它：舊的 JS/CSS 留在快取裡，才不會讓還開著舊 index.html 的人
  * 拿到已經被刪掉的舊檔名。
  */
-const CACHE = 'payments-2'
+const CACHE = 'payments-3'
 
 /* 沒有網路也要能開畫面的最小集合 */
 const SHELL = ['./', './index.html', './manifest.json', './icons/icon-192.png']

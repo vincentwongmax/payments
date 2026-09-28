@@ -69,6 +69,7 @@
 - **加入時間**：每張記錄卡片標題旁邊會顯示這筆是**什麼時候加進 App 的**（剛剛／N 分鐘前／N 小時前／昨天／前天／N 天前），點一下切換成完整時間（`2026-09-24 09:46`）。手機版在標題右邊、電腦版在「圖片」按鈕左邊
 - **對話框打開時背景不會跟著捲**：看圖、更多、修改人物以及各種確認視窗打開時，底下的頁面會被鎖住（`overflow: hidden`），滑到對話框外面也不會把整頁滑走
 - **金額只收數字**：「付款多少錢」只留數字與一個小數點，其他字元打進去會被吃掉；純文字模式改金額也一樣
+- **金額右邊有一顆清空小圖示**：「付款多少錢」輸入框右邊固定有一顆 **✕**，按一下就把金額清成空白（沒金額或鎖定時會變淡、按不動），清完游標會留在欄位裡，方便直接重打
 
 ## 快速開始
 
@@ -230,21 +231,22 @@ HEIC 從 iOS 11 起就是 iPhone 相機的預設格式，但**除了 Safari 17+�
 
 ```
 index.html                 頁面（連到 manifest，可加到主畫面）
-vite.config.js
+vite.config.js             含 decimen 的 runtime 外掛（原樣供應／複製 /decimen-rt/）與 CSS 限定
 public/tesseract/          OCR 引擎與語言包（離線用）
-public/decimen/            QR CODE 傳輸用的兩個單檔頁面（Decimen Optical Transfer v0.5.3，AGPL）
-  sender.html              發送端：把備份檔變成動畫 QR（官方檔＋我們的自動塞檔橋接）
-  receiver.html            接收端：用鏡頭掃 QR 還原檔案（官方檔＋自動交回 App 的橋接）
-  LICENSE, NOTICE          上游授權全文與第三方聲明
 public/sw.js               Service Worker：離線可用（頁面與引擎快取）
 public/manifest.json       PWA 設定（名稱、圖示、獨立顯示）
 public/icons/              App 圖示 192／512／apple-touch-icon
 src/
+  decimen/                 QR CODE 傳輸（Decimen Optical Transfer v0.5.3，AGPL）
+    runtime/                 上游建置檔原封不動（JS chunk＋wasm＋樣式，只留英文語系）
+    scopeCss.js            把 decimen 的全域樣式縮進 #decimen-app（建置時用）
+    LICENSE, NOTICE        上游授權全文與第三方聲明
   main.js                  掛載 App、註冊 Service Worker、要求永久儲存
   style.css                設計基底（配色、按鈕、表單、對話框）
   App.vue                  主頁面：人物、上傳、OCR 佇列、重置、匯出匯入、QR 傳輸、設定頁
   components/
     RecordCard.vue         單筆記錄卡片
+    DecimenPanel.vue       QR CODE 傳輸的面板（decimen 的介面，整合進 App 裡）
   lib/
     db.js                  IndexedDB 封裝
     dialog.js              對話框（SweetAlert2）：刪除、重置、合併、重新命名的確認
@@ -285,30 +287,41 @@ test/run.js                自我檢查，用 `npm test` 執行
 
 在「設定 → QR CODE 傳輸」有兩個按鈕，用來把**完整備份（含圖片）**從一台裝置傳到另一台：
 
-1. 發送方按「**QR CODE 匯出**」：App 會先把備份做好、放進瀏覽器的 `qr-handoff` 快取，然後開一個新分頁顯示
-   [Decimen Optical Transfer](https://github.com/bashalarmistalt/decimen-optical-transfer) 的發送頁面；
-   我們在那個頁面加了一小段橋接，會**自動把備份檔塞進去**，所以不用自己選檔，畫面直接開始播動畫 QR。
-2. 接收方按「**QR CODE 匯入**」：同樣開一個新分頁用**鏡頭**掃對方螢幕上的 QR 動畫；掃完之後那一段橋接會把收到的檔案
-   放回 `qr-handoff`、通知原本的 App，然後**自己把分頁關掉（自動返回）**，App 收到後走原本的匯入流程
-   （合併、人物對齊、略過重複的都一樣），完成後會顯示「匯入完成」。
+1. 發送方按「**QR CODE 匯出**」：App 會先做好備份檔，直接交給
+   [Decimen Optical Transfer](https://github.com/bashalarmistalt/decimen-optical-transfer) 的發送介面，
+   **不用自己選檔**，畫面立刻開始播動畫 QR。
+2. 接收方按「**QR CODE 匯入**」：切到接收介面，按「Start camera」用**鏡頭**掃對方螢幕上的 QR 動畫；
+   收到檔案後 App **自動接手匯入**（合併、人物對齊、略過重複的都一樣），完成後顯示「匯入完成」。
 
 兩邊都可以當發送方或接收方。中間**完全沒有網路連線**，資料是用螢幕的光傳過去的，也不會上傳到任何伺服器。
 
-- 相機（`getUserMedia`）與快取都**只在 https 或 localhost** 提供，所以用區域網的 `http://192.168.x.x` 開時不能掃。
+**整個介面就在 App 裡面**（不是開新分頁、也不是外部的靜態頁面），左上的切換鈕可以在「傳送／接收」之間換，
+右上角的 ✕ 關閉；關閉時會**順手把鏡頭關掉**。點 QR 會進入**全螢幕**（畫面最大、相機最好讀），再點一下或按 <kbd>Esc</kbd> 退出。
+
+- 相機（`getUserMedia`）**只在 https 或 localhost** 提供，所以用區域網的 `http://192.168.x.x` 開時不能掃。
 - 速度大約每秒 200KB（手機對手機、原始碼作者實測 199KB/s）：**10MB 的備份大約 50 秒**，圖片越多越久。
-- 兩個 decimen 頁面（約 1.2MB）會跟著 Service Worker 一起離線快取，所以第一次開過 App 之後，**沒網路也能做 QR 傳輸**。
+- decimen 的程式（含 281KB 的 wasm）會跟著 Service Worker 一起離線快取，所以第一次開過 App 之後，**沒網路也能做 QR 傳輸**。
 - 這個通道沒有加密：螢幕上播的東西，任何對著它的鏡頭都讀得到。它給你的是「不需要網路」，不是「保密」。
+- 介面是英文的（decimen 原版只有簡體中文與其他語言，這裡刻意只留英文，不載入其他語系檔）。
 
 ## 授權
 
 本專案採用 **[AGPL-3.0-or-later](LICENSE)**（因為內含 AGPL 的 decimen 光學傳輸程式碼，見下）。
 
 QR CODE 傳輸用的是 [bashalarmistalt/decimen-optical-transfer](https://github.com/bashalarmistalt/decimen-optical-transfer)
-**v0.5.3** 的官方 standalone 檔，版權 **Evan Crawley（Bash Alarmist）**，授權 **AGPL-3.0-or-later**：
+**v0.5.3** 的官方建置檔，版權 **Evan Crawley（Bash Alarmist）**，授權 **AGPL-3.0-or-later**：
 
-- `public/decimen/sender.html`、`public/decimen/receiver.html`：官方檔案**本體未修改**，只在本檔最後加了一段
-  「付款記錄」App 的橋接 script（自動塞入備份檔／自動交回收到的檔案，見檔案內的 `data-payments-bridge` 註解）。
-- `public/decimen/LICENSE`、`public/decimen/NOTICE`：上游授權全文與第三方聲明（含 Steve Dakh 的 MIT 部分、
+- `src/decimen/runtime/`：decimen v0.5.3 的官方**建置檔原封不動**放在這裡（`send`／`receive`／`dialog`／
+  `worker`／`wake-lock`／`share-dialog` 等 JS chunk、`decimen_codec-*.wasm` 與樣式）。這些檔名帶建置雜湊、
+  而且彼此用相對路徑互找（worker 找 wasm、語系用相對 import），所以由 `vite.config.js` 的 `decimen-runtime`
+  外掛**原樣供應在 `/decimen-rt/`**（開發時走中介層、建置時複製到 `dist/decimen-rt/`），不讓 Vite 重新打包。
+  只保留 `en` 一個語系檔，其他語系沒有一起放進來。
+- `src/components/DecimenPanel.vue`：面板本體。把上游 `send/index.html`、`receive/index.html` 的標記改寫成
+  Vue 樣板，去掉示範 payload 與「分享接收端連結」的功能，runtime 需要的每個 id 都照原樣保留
+  （少一個，decimen 會在載入時直接丟例外）。
+- `src/decimen/scopeCss.js`：decimen 的樣式是寫給一整個網頁的（`html`／`body`／`*`／`button`），
+  這裡把它整份縮進 `#decimen-app` 底下才載入，本來的 App 不會被改到。
+- `src/decimen/LICENSE`、`src/decimen/NOTICE`：上游授權全文與第三方聲明（含 Steve Dakh 的 MIT 部分、
   decimen-codec 與 zxing-cpp／Apache-2.0）。專案根目錄的 `LICENSE` 是同一份 AGPL-3.0 全文。
 - 上游 v0.3.0（含）以前的版本是 MIT 授權，如果你想要一個不帶 AGPL 的版本，可以改用那些檔案。
 
