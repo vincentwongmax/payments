@@ -1,8 +1,9 @@
 /* 最小 IndexedDB 封裝：資料存在使用者自己的瀏覽器，離線可用。 */
 
 const DB_NAME = 'payment-records'
-const VERSION = 1
-const STORES = ['records', 'persons', 'settings']
+/* v2：多了 sheets（分頁）這張表；records／persons 每筆多一個 sheetId 欄位 */
+const VERSION = 2
+const STORES = ['records', 'persons', 'settings', 'sheets']
 
 let dbPromise = null
 

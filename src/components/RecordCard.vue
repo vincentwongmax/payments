@@ -26,6 +26,7 @@ const emit = defineEmits([
   'more',
   'retry',
   'skip',
+  'rename',
   'rename-source',
   'pick-note',
   'save-note',
@@ -77,6 +78,39 @@ function clearAmount() {
   if (locked.value) return
   r.value.amount = ''
   amountInputEl.value?.focus()
+}
+
+/*
+ * 改名：點名稱就變成輸入框。
+ * 使用者只打「eat」而沒有打副檔名時，會自動接回原本的副檔名（eat.png），
+ * 這樣匯出的檔名才不會沒有副檔名。鎖定的記錄不能改。
+ */
+const renaming = ref(false)
+const nameInputEl = ref(null)
+
+async function startRename() {
+  if (locked.value) return
+  renaming.value = true
+  await nextTick()
+  nameInputEl.value?.focus()
+  nameInputEl.value?.select()
+}
+
+function cancelRename() {
+  renaming.value = false
+}
+
+function commitRename(event) {
+  if (!renaming.value) return
+  renaming.value = false
+  const raw = String(event?.target?.value ?? '').trim()
+  if (!raw) return
+  const before = String(r.value.fileName ?? '')
+  const ext = before.includes('.') ? before.slice(before.lastIndexOf('.')) : ''
+  const next = !raw.includes('.') && ext ? `${raw}${ext}` : raw
+  if (next === before) return
+  r.value.fileName = next
+  emit('rename', r.value)
 }
 
 /* 手動新增的記錄補圖片用（可以一次選多張） */
@@ -347,7 +381,30 @@ function toggleBeneficiary(id) {
 
     <div class="body">
       <div class="top">
-        <span class="file" :title="r.fileName">{{ r.fileName }}</span>
+        <!-- 名稱可以直接改（點一下變輸入框）：例 IMG_123.png → eat.png -->
+        <input
+          v-if="renaming"
+          ref="nameInputEl"
+          class="file-input"
+          :value="r.fileName"
+          maxlength="120"
+          aria-label="記錄名稱"
+          @click.stop
+          @keydown.enter.prevent="commitRename"
+          @keydown.esc.prevent="cancelRename"
+          @blur="commitRename"
+        />
+        <button
+          v-else
+          type="button"
+          class="file"
+          :class="{ 'file-editable': !locked }"
+          :disabled="locked"
+          :title="locked ? r.fileName : `${r.fileName}（點一下改名）`"
+          @click.stop="startRename"
+        >
+          {{ r.fileName }}
+        </button>
         <button
           type="button"
           class="badge"
@@ -922,6 +979,43 @@ function toggleBeneficiary(id) {
   font-weight: 550;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 名稱平常是一顆按鈕（點一下改名），但看起來還是原本的文字 */
+.file-editable {
+  padding: 2px 6px;
+  margin: -2px -6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: text;
+}
+
+.file-editable:hover {
+  background: var(--accent-soft);
+}
+
+/* 鎖定時名稱只是文字（不能改），不要出現按鈕的樣子 */
+.file-editable:disabled {
+  background: transparent;
+  cursor: default;
+}
+
+/* 改名中的輸入框：佔滿原本名稱的位置 */
+.file-input {
+  min-width: 0;
+  flex: 1;
+  padding: 2px 6px;
+  margin: -2px -6px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  font-weight: 550;
 }
 
 .spacer {

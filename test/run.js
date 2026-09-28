@@ -49,7 +49,16 @@ import { md5Hex } from '../src/lib/md5.js'
 import { scopeCss, scopeSelector } from '../src/decimen/scopeCss.js'
 import { datePart, imageExportName, uniqueExportName } from '../src/lib/imageExport.js'
 import { crc32, zipStore } from '../src/lib/zip.js'
-import { fromBackup, isBackupFile, mergeRecords, remapRecords, resolvePersons, toBackup } from '../src/lib/backup.js'
+import { fromBackup, isBackupFile, mergeRecords, remapRecords, resolvePersons, sheetsFromBackup, toBackup, toBackupSheet } from '../src/lib/backup.js'
+import {
+  cleanSheetName,
+  makeSheet,
+  nextSheetSeq,
+  sheetCardTitle,
+  sheetOf,
+  sortSheets,
+  uniqueSheetName,
+} from '../src/lib/sheets.js'
 import {
   DEFAULT_EXPORT_RULES,
   FIELD_KEYS,
@@ -438,19 +447,24 @@ const personList = [
   { id: 'p2', name: '小明', isSelf: false },
 ]
 
-const backup1 = await toBackup(originals, personList, 'MOP', encode)
+const backup1 = await toBackup([{ name: '日常', records: originals, persons: personList, defaultCurrency: 'MOP' }], encode)
 const restored = await fromBackup(backup1, decode)
-const backup2 = await toBackup(restored.records, restored.persons, restored.defaultCurrency, encode)
+const backup2 = await toBackup(
+  [{ name: '日常', records: restored.records, persons: restored.persons, defaultCurrency: restored.defaultCurrency }],
+  encode,
+)
 
-assert.deepEqual(backup2.records, backup1.records, '匯入後的資料必須和匯出前一樣')
-assert.deepEqual(backup2.persons, backup1.persons)
-assert.equal(backup2.defaultCurrency, 'MOP')
+assert.deepEqual(backup2.sheets[0].records, backup1.sheets[0].records, '匯入後的資料必須和匯出前一樣')
+assert.deepEqual(backup2.sheets[0].persons, backup1.sheets[0].persons)
+assert.equal(backup2.sheets[0].defaultCurrency, 'MOP')
+assert.equal(backup2.version, 2, '新的備份格式是 v2')
+assert.equal(backup2.sheets[0].name, '日常', '分頁名稱要一起帶走')
 
 /* 附加圖片也要跟著備份來回（base64 → File → base64） */
-assert.equal(backup1.records[2].images.length, 2, '兩張附加圖片都要寫進備份')
-assert.equal(backup1.records[2].images[0].image, 'B64:E1')
+assert.equal(backup1.sheets[0].records[2].images.length, 2, '兩張附加圖片都要寫進備份')
+assert.equal(backup1.sheets[0].records[2].images[0].image, 'B64:E1')
 assert.deepEqual(
-  backup1.records[2].images.map((i) => ({ hash: i.hash, fileTime: i.fileTime })),
+  backup1.sheets[0].records[2].images.map((i) => ({ hash: i.hash, fileTime: i.fileTime })),
   [
     { hash: 'he1', fileTime: 5 },
     { hash: 'he2', fileTime: 6 },
@@ -473,16 +487,21 @@ assert.equal(second.skipped, 3)
 /* ---------- 鎖定與「多金額選項不再出現」也要跟著備份走 ---------- */
 const lockedBackup = await toBackup(
   [
-    makeRecord({ id: 'r9', locked: true, amountChooserOff: true }),
-    makeRecord({ id: 'r10', hash: 'h10' }),
+    {
+      name: '',
+      defaultCurrency: '',
+      persons: personList,
+      records: [
+        makeRecord({ id: 'r9', locked: true, amountChooserOff: true }),
+        makeRecord({ id: 'r10', hash: 'h10' }),
+      ],
+    },
   ],
-  personList,
-  '',
   encode,
 )
-assert.equal(lockedBackup.records[0].locked, true, '鎖定要寫進備份')
-assert.equal(lockedBackup.records[0].amountChooserOff, true, '不再顯示多金額選項也要寫進備份')
-assert.equal(lockedBackup.records[1].locked, false)
+assert.equal(lockedBackup.sheets[0].records[0].locked, true, '鎖定要寫進備份')
+assert.equal(lockedBackup.sheets[0].records[0].amountChooserOff, true, '不再顯示多金額選項也要寫進備份')
+assert.equal(lockedBackup.sheets[0].records[1].locked, false)
 const lockedRestored = await fromBackup(lockedBackup, decode)
 assert.equal(lockedRestored.records[0].locked, true, '匯入後仍然是鎖定')
 assert.equal(lockedRestored.records[0].amountChooserOff, true)
@@ -496,6 +515,56 @@ assert.equal(legacy.records[0].locked, false)
 assert.equal(legacy.records[0].amountChooserOff, false)
 /* 舊備份沒有 images 欄位 → 空的附加圖片，不會壞掉 */
 assert.deepEqual(legacy.records[0].extraImages, [])
+
+/* ---------- 分頁 ---------- */
+assert.equal(cleanSheetName('  日常  '), '日常')
+assert.equal(cleanSheetName(''), '預設')
+assert.equal(cleanSheetName('x'.repeat(60)).length, 40, '名稱太長要截短')
+assert.equal(uniqueSheetName([{ name: '日常' }], '日常'), '日常（2）')
+assert.equal(uniqueSheetName([{ name: '日常' }, { name: '日常（2）' }], '日常'), '日常（3）')
+assert.equal(uniqueSheetName([], '工作'), '工作')
+
+/* 只有一個分頁時主畫面維持「付款記錄」，多個才加上分頁名稱 */
+const twoSheets = [
+  { id: 's1', name: '日常' },
+  { id: 's2', name: '工作' },
+]
+assert.equal(sheetCardTitle([], ''), '付款記錄')
+assert.equal(sheetCardTitle([{ id: 's1', name: '日常' }], 's1'), '付款記錄')
+assert.equal(sheetCardTitle(twoSheets, 's2'), '工作_付款記錄')
+assert.equal(sheetCardTitle(twoSheets, 'nope'), '付款記錄', '找不到就退回原本的標題')
+
+assert.deepEqual(sortSheets([{ seq: 2 }, { seq: 0 }, { seq: 1 }]).map((s) => s.seq), [0, 1, 2])
+assert.equal(nextSheetSeq([{ seq: 1 }, { seq: 4 }]), 5)
+assert.equal(nextSheetSeq([]), 1)
+assert.equal(sheetOf({ sheetId: 'a' }, 'fallback'), 'a')
+assert.equal(sheetOf({}, 'fallback'), 'fallback', '舊資料沒有 sheetId 時算在 fallback 分頁')
+
+const fresh = makeSheet('日常', 3)
+assert.equal(fresh.name, '日常')
+assert.equal(fresh.seq, 3)
+assert.ok(fresh.id && fresh.createdAt, '新分頁要有 id 與建立時間')
+
+/* 多個分頁的備份：攤平給匯入用，重複的 id 會重新編號 */
+const multi = await toBackup(
+  [
+    { name: '甲', persons: [{ id: 'p1', name: 'Vincent' }], records: [{ id: 'r1', fileName: 'a.png' }] },
+    { name: '乙', persons: [{ id: 'p1', name: 'Ben' }], records: [{ id: 'r1', fileName: 'b.png' }] },
+  ],
+  encode,
+)
+assert.equal(multi.sheets.length, 2)
+assert.deepEqual(sheetsFromBackup(multi).map((s) => s.name), ['甲', '乙'])
+const flattened = await fromBackup(multi, decode)
+assert.equal(flattened.records.length, 2, '多個分頁的記錄都要攤平帶進來')
+assert.equal(new Set(flattened.records.map((r) => r.id)).size, 2, '撞到的 id 要重新編號')
+assert.equal(new Set(flattened.persons.map((p) => p.id)).size, 2)
+assert.deepEqual(flattened.sheetNames, ['甲', '乙'])
+/* 一個分頁的內容直接寫成一段備份 */
+const single = await toBackupSheet({ name: '甲', persons: [], records: [], defaultCurrency: 'CNY' }, encode)
+assert.equal(single.name, '甲')
+assert.equal(single.defaultCurrency, 'CNY')
+assert.deepEqual(single.records, [])
 
 /* ---------- 人物對齊（別名） ---------- */
 const existingPeople = [

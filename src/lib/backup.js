@@ -2,7 +2,9 @@
    toBackup / fromBackup 的圖片轉換由外部注入，方便測試。 */
 
 const APP_ID = 'payment-records'
-export const BACKUP_VERSION = 1
+/* v2：備份檔裡改成 sheets: [{ name, persons, records }]（一個檔案可以裝多個分頁）
+   v1（persons／records 直接放在最上層）還是讀得回來。 */
+export const BACKUP_VERSION = 2
 
 export function blobToBase64(blob) {
   return new Promise((resolve, reject) => {
@@ -20,12 +22,13 @@ export function base64ToBlob(base64, type = '') {
   return new Blob([bytes], { type })
 }
 
-export async function toBackup(records, persons, defaultCurrency, encodeImage = blobToBase64) {
+/** 一個分頁的內容 → 備份裡的一段（圖片以 base64 夾進去） */
+export async function toBackupSheet(sheet, encodeImage = blobToBase64) {
+  const persons = sheet?.persons ?? []
+  const records = sheet?.records ?? []
   return {
-    app: APP_ID,
-    version: BACKUP_VERSION,
-    exportedAt: new Date().toISOString(),
-    defaultCurrency,
+    name: sheet?.name ?? '',
+    defaultCurrency: sheet?.defaultCurrency ?? '',
     persons: persons.map((p) => ({
       id: p.id,
       name: p.name,
@@ -80,6 +83,47 @@ export async function toBackup(records, persons, defaultCurrency, encodeImage = 
 }
 
 /**
+ * 一份備份檔（可以裝多個分頁）。
+ * sheets: [{ name, persons, records, defaultCurrency }]
+ */
+export async function toBackup(sheets, encodeImage = blobToBase64) {
+  return {
+    app: APP_ID,
+    version: BACKUP_VERSION,
+    exportedAt: new Date().toISOString(),
+    sheets: await Promise.all((sheets ?? []).map((s) => toBackupSheet(s, encodeImage))),
+  }
+}
+
+/** 讀備份檔 → 一律正規化成 [{ name, persons, records, defaultCurrency }]（v1 也算一個分頁） */
+export function sheetsFromBackup(payload) {
+  if (!payload || payload.app !== APP_ID) throw new Error('這不是本程式匯出的備份檔')
+  if (Array.isArray(payload.sheets)) {
+    const sheets = payload.sheets
+      .filter((s) => s && Array.isArray(s.records))
+      .map((s) => ({
+        name: String(s.name ?? ''),
+        defaultCurrency: s.defaultCurrency ?? '',
+        persons: Array.isArray(s.persons) ? s.persons : [],
+        records: s.records,
+      }))
+    if (!sheets.length) throw new Error('這不是本程式匯出的備份檔')
+    return sheets
+  }
+  if (Array.isArray(payload.records)) {
+    return [
+      {
+        name: String(payload.sheetName ?? ''),
+        defaultCurrency: payload.defaultCurrency ?? '',
+        persons: Array.isArray(payload.persons) ? payload.persons : [],
+        records: payload.records,
+      },
+    ]
+  }
+  throw new Error('這不是本程式匯出的備份檔')
+}
+
+/**
  * 這個檔案「看起來」是不是本程式匯出的備份。
  * QR CODE 傳輸可以收到任何檔案，匯入前先用這個判斷：
  * 不是備份的話就交給使用者自己分享／儲存，不要硬丟進匯入流程。
@@ -90,70 +134,96 @@ export async function isBackupFile(file) {
     const head = await file.slice(0, 64).text()
     if (!head.trimStart().startsWith('{')) return false
     const payload = JSON.parse(await file.text())
-    return !!payload && payload.app === APP_ID && Array.isArray(payload.records)
+    return (
+      !!payload &&
+      payload.app === APP_ID &&
+      (Array.isArray(payload.records) || Array.isArray(payload.sheets))
+    )
   } catch {
     return false
   }
 }
 
+/**
+ * 讀一份備份檔，準備併進目前的分頁。
+ * 備份檔裡可能有好多個分頁，匯入一律把它們攤平併進目前分頁
+ * （跟以前一樣是「合併」而不是「還原」，要乾淨還原請先按重置）。
+ */
 export async function fromBackup(payload, decodeImage = base64ToBlob) {
-  if (!payload || payload.app !== APP_ID || !Array.isArray(payload.records))
-    throw new Error('這不是本程式匯出的備份檔')
+  const sheets = sheetsFromBackup(payload)
 
-  const persons = (payload.persons ?? [])
-    .filter((p) => p && p.id && p.name)
-    .map((p) => ({
-      id: p.id,
-      name: p.name,
-      isSelf: !!p.isSelf,
-      aliases: [...(p.aliases ?? [])],
-    }))
-
+  const persons = []
+  const seenPersonIds = new Set()
   const records = []
-  for (const raw of [...payload.records].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))) {
-    /* 附加圖片：舊備份沒有這個欄位，沒有就是空陣列 */
-    const extraImages = []
-    for (const [i, img] of (raw.images ?? []).entries()) {
-      const file = img?.image ? await decodeImage(img.image, img.fileType ?? '') : null
-      if (!file) continue
-      extraImages.push({
-        id: `extra-${i + 1}`,
-        file,
-        fileName: `${raw.fileName ?? '圖片'}-${i + 2}`,
-        hash: img.hash ?? '',
-        fileTime: img.fileTime ?? 0,
-        fileTimeSource: img.fileTimeSource ?? 'file',
+  const seenRecordIds = new Set()
+
+  for (const sheet of sheets) {
+    for (const p of sheet.persons) {
+      if (!p || !p.id || !p.name) continue
+      /* 不同分頁用了同一個 id 就重新編一個，免得多個分頁互相蓋掉 */
+      const id = seenPersonIds.has(p.id) ? `${p.id}-${persons.length}` : p.id
+      seenPersonIds.add(id)
+      persons.push({
+        id,
+        name: p.name,
+        isSelf: !!p.isSelf,
+        aliases: [...(p.aliases ?? [])],
       })
     }
-    records.push({
-      id: raw.id ?? `imported-${records.length}`,
-      createdAt: raw.createdAt ?? 0,
-      fileName: raw.fileName ?? '未命名圖片',
-      /* 手動新增的記錄沒有圖片 */
-      file: raw.image ? await decodeImage(raw.image, raw.fileType ?? '') : null,
-      fileTime: raw.fileTime ?? 0,
-      fileTimeSource: raw.fileTimeSource ?? 'file',
-      hash: raw.hash ?? '',
-      ocrStatus: raw.ocrStatus === 'running' ? 'pending' : (raw.ocrStatus ?? 'pending'),
-      ocrProgress: 0,
-      ocrText: raw.ocrText ?? '',
-      ocrError: raw.ocrError ?? '',
-      amounts: (raw.amounts ?? []).map((a) => ({ ...a })),
-      currency: raw.currency ?? '',
-      currencyLocked: !!raw.currencyLocked,
-      amount: raw.amount ?? '',
-      paidAtText: raw.paidAtText ?? '',
-      paidAtManual: !!raw.paidAtManual,
-      locked: !!raw.locked,
-      amountChooserOff: !!raw.amountChooserOff,
-      extraImages,
-      payerId: raw.payerId ?? '',
-      beneficiaryIds: [...(raw.beneficiaryIds ?? [])],
-      note: raw.note ?? '',
-    })
+
+    for (const raw of [...sheet.records].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))) {
+      /* 附加圖片：舊備份沒有這個欄位，沒有就是空陣列 */
+      const extraImages = []
+      for (const [i, img] of (raw.images ?? []).entries()) {
+        const file = img?.image ? await decodeImage(img.image, img.fileType ?? '') : null
+        if (!file) continue
+        extraImages.push({
+          id: `extra-${i + 1}`,
+          file,
+          fileName: `${raw.fileName ?? '圖片'}-${i + 2}`,
+          hash: img.hash ?? '',
+          fileTime: img.fileTime ?? 0,
+          fileTimeSource: img.fileTimeSource ?? 'file',
+        })
+      }
+      const baseId = raw.id ?? `imported-${records.length}`
+      const id = seenRecordIds.has(baseId) ? `${baseId}-${records.length}` : baseId
+      seenRecordIds.add(id)
+      records.push({
+        id,
+        createdAt: raw.createdAt ?? 0,
+        fileName: raw.fileName ?? '未命名圖片',
+        /* 手動新增的記錄沒有圖片 */
+        file: raw.image ? await decodeImage(raw.image, raw.fileType ?? '') : null,
+        fileTime: raw.fileTime ?? 0,
+        fileTimeSource: raw.fileTimeSource ?? 'file',
+        hash: raw.hash ?? '',
+        ocrStatus: raw.ocrStatus === 'running' ? 'pending' : (raw.ocrStatus ?? 'pending'),
+        ocrProgress: 0,
+        ocrText: raw.ocrText ?? '',
+        ocrError: raw.ocrError ?? '',
+        amounts: (raw.amounts ?? []).map((a) => ({ ...a })),
+        currency: raw.currency ?? '',
+        currencyLocked: !!raw.currencyLocked,
+        amount: raw.amount ?? '',
+        paidAtText: raw.paidAtText ?? '',
+        paidAtManual: !!raw.paidAtManual,
+        locked: !!raw.locked,
+        amountChooserOff: !!raw.amountChooserOff,
+        extraImages,
+        payerId: raw.payerId ?? '',
+        beneficiaryIds: [...(raw.beneficiaryIds ?? [])],
+        note: raw.note ?? '',
+      })
+    }
   }
 
-  return { persons, records, defaultCurrency: payload.defaultCurrency ?? '' }
+  return {
+    persons,
+    records,
+    defaultCurrency: sheets[0]?.defaultCurrency ?? '',
+    sheetNames: sheets.map((s) => s.name).filter(Boolean),
+  }
 }
 
 /* ---------------- 人物比對與對齊 ---------------- */

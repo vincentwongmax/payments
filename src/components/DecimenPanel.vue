@@ -15,14 +15,14 @@
  * 2. runtime 的檔案（JS chunk + wasm）因為檔名帶著建置雜湊、而且彼此用相對路徑互找，
  *    所以由 vite.config.js 的 decimen-runtime 外掛原封不動地供應在 /decimen-rt/ 底下。
  */
-import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 /* decimen 的樣式（已經被外掛縮進 #decimen-app，不會汙染本來的 App） */
 import decimenCss from 'virtual:decimen-css'
 import { isBackupFile } from '../lib/backup.js'
 import { shareOrSaveFile } from '../lib/util.js'
 
 /* 由 App 的 view 控制（跟設定頁一樣是一個「頁面」，不是在頁面上蓋一層） */
-defineProps({ open: { type: Boolean, default: false } })
+const props = defineProps({ open: { type: Boolean, default: false } })
 const emit = defineEmits(['received', 'foreign', 'close'])
 
 const mode = ref('send')
@@ -340,12 +340,27 @@ onMounted(() => {
   watchSpecs()
 })
 
+/*
+ * 這一頁被收掉時一定要收拾乾淨——不管是按 ✕ 還是手機的返回手勢／返回鍵。
+ * 返回手勢只會讓 App 把 view 切走（open 變成 false），不會經過 close()，
+ * 所以這裡盯著 open：一關掉就停串流、關鏡頭、關對話框、離開全螢幕。
+ * 漏掉的話：鏡頭會一直亮、QR 串流會一直在背景跑，而且 decimen 的對話框要是
+ * 還開著，style.css 的 `body:has(dialog[open]) { overflow: hidden }` 會讓整個
+ * 頁面不能捲動（看起來就是半屏空白、要滑一下才正常）。
+ */
+watch(
+  () => props.open,
+  (isOpen) => {
+    if (!isOpen) teardown()
+  },
+)
+
 onBeforeUnmount(() => {
   observer?.disconnect()
   observer = null
   specsObserver?.disconnect()
   specsObserver = null
-  stopCamera()
+  teardown()
 })
 
 defineExpose({ sendFile, receive, close })
@@ -802,8 +817,10 @@ body.qr-full .dt-foreign {
   display: none;
 }
 
-/* 全螢幕播 QR 時整頁不要跟著捲（畫布是照視窗大小畫的） */
-body.qr-full {
+/* 全螢幕播 QR 時整頁不要跟著捲（畫布是照視窗大小畫的）。
+   注意這裡要 :global()：scoped 樣式會在選擇器最後補一個 [data-v-…]，
+   而 <body> 不屬於這個元件、沒有那個屬性，写成 body.qr-full 永遠不會生效。 */
+:global(body.qr-full) {
   overflow: hidden;
 }
 

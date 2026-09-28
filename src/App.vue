@@ -42,6 +42,29 @@ import { missingPersonIds, personNameSnapshot, recordsUsingPerson, restoreMissin
 import { buildShareQuery, fmtDateTime, labelBySource, parseShareParams, safeFileNamePart, searchFromText, shareLinkKey, toAmountText, uid } from './lib/util.js'
 import { imageExportName, uniqueExportName } from './lib/imageExport.js'
 import { zipStore } from './lib/zip.js'
+import {
+  DEFAULT_SHEET_NAME,
+  cleanSheetName,
+  makeSheet,
+  nextSheetSeq,
+  sheetCardTitle,
+  sheetOf,
+  sortSheets,
+  uniqueSheetName,
+} from './lib/sheets.js'
+
+/* ---------- 分頁 ----------
+ * 一個分頁＝一組「人物 ＋ 付款記錄」；其他設定（顏色、匯出規則、備注分類…）共用。
+ * records／persons 這兩個 ref 永遠只裝「目前分頁」的資料，所以下面所有既有的
+ * 邏輯（辨識、卡片、匯出、螢光黃…）都不用改。
+ */
+const sheets = ref([])
+const currentSheetId = ref('')
+const currentSheet = computed(
+  () => sheets.value.find((s) => s.id === currentSheetId.value) ?? sheets.value[0] ?? null,
+)
+/* 主畫面的付款記錄標題：只有一個分頁時維持「付款記錄」 */
+const sheetTitle = computed(() => sheetCardTitle(sheets.value, currentSheetId.value))
 
 /* ---------- 人物 ---------- */
 const persons = ref([])
@@ -633,13 +656,37 @@ const buildTimeText = buildTime
  * 與 Android 的系統返回鍵原本會直接離開整個 App。
  * 開設定頁時自己補一筆歷史記錄，返回手勢／返回鍵就會回到主畫面。
  */
+/*
+ * 換頁時的捲動與鎖定：
+ *   1. 捲動要在「畫面換完之後」重設。以前是同步呼叫 scrollTo，那時候還是舊畫面，
+ *      瀏覽器會用自己的歷史捲動還原蓋回來，遇到新頁面比較短就會停在超出內容的位置
+ *      （看起來就是下面一片空白、要滑一下才正常）。
+ *   2. 乾脆把瀏覽器的自動還原關掉，捲動完全由我們決定，才不會兩邊搶。
+ *   3. 保險：SweetAlert2 開對話框時會把 body 鎖住（inline overflow/padding-right），
+ *      要是它沒解掉，整個頁面就不能捲。回到一般頁面時如果沒有任何對話框開著，就清掉。
+ */
+const resetScroll = () => {
+  nextTick(() => {
+    window.scrollTo({ top: 0, left: 0 })
+    requestAnimationFrame(() => window.scrollTo({ top: 0, left: 0 }))
+  })
+}
+
+function unlockScrollIfIdle() {
+  if (document.querySelector('dialog[open]')) return
+  if (document.querySelector('.swal2-container')) return
+  if (document.body.style.overflow) document.body.style.overflow = ''
+  if (document.body.style.paddingRight) document.body.style.paddingRight = ''
+}
+
 const SETTINGS_STATE = 'settings'
 
 const openSettings = async () => {
   if (view.value === 'settings') return
   view.value = 'settings'
   newCategory.value = ''
-  window.scrollTo({ top: 0 })
+  unlockScrollIfIdle()
+  resetScroll()
   try {
     history.pushState({ [SETTINGS_STATE]: true }, '')
   } catch {
@@ -653,7 +700,8 @@ const DECIMEN_STATE = 'decimen'
 const openQrPanel = () => {
   if (view.value === 'decimen') return
   view.value = 'decimen'
-  window.scrollTo({ top: 0 })
+  unlockScrollIfIdle()
+  resetScroll()
   try {
     history.pushState({ [DECIMEN_STATE]: true }, '')
   } catch {
@@ -706,7 +754,8 @@ const closeSettings = () => {
     return
   }
   view.value = 'main'
-  window.scrollTo({ top: 0 })
+  unlockScrollIfIdle()
+  resetScroll()
 }
 
 /* 返回手勢／返回鍵：切回上一個頁面就好，不要離開整個 App */
@@ -715,7 +764,8 @@ function onPopState() {
   const want = state[SETTINGS_STATE] ? 'settings' : state[DECIMEN_STATE] ? 'decimen' : 'main'
   if (view.value === want) return
   view.value = want
-  window.scrollTo({ top: 0 })
+  if (want !== 'decimen') unlockScrollIfIdle()
+  resetScroll()
   if (want === 'settings') Promise.all([loadStorageInfo(), loadOfflineState()])
 }
 
@@ -2357,6 +2407,12 @@ async function resetAll() {
   noteCategories.value = keepNoteCategories(noteCategories.value, keep.notes)
   actionNotice.value = ''
   savedSigs.clear()
+  savedRecordIds = new Set()
+  savedPersonIds = new Set()
+  /* 分頁也一起重來：清空之後至少要留一個乾淨的分頁 */
+  const freshSheet = makeSheet(DEFAULT_SHEET_NAME, 1)
+  sheets.value = [freshSheet]
+  currentSheetId.value = freshSheet.id
   seqCounter = 0
   manualCounter = 0
   /* 重置連「套用過的分享連結」也清掉，重新整理才會再套用一次連結 */
@@ -2411,13 +2467,6 @@ async function encodeForExport(file) {
  * 產生完整備份檔（含圖片）：「匯出」下載與 QR CODE 傳輸共用。
  * 檔名帶上「自己」的名字，方便分辨這份是誰的記錄。
  */
-async function buildBackupFile() {
-  unreadableImages.length = 0
-  const payload = await toBackup(records.value, persons.value, defaultCurrency.value, encodeForExport)
-  const name = ['付款記錄', safeFileNamePart(selfPerson.value?.name), stamp()].filter(Boolean).join('-')
-  return new File([JSON.stringify(payload)], `${name}.json`, { type: 'application/json' })
-}
-
 async function exportBackup() {
   try {
     if (!records.value.length) {
@@ -2425,52 +2474,60 @@ async function exportBackup() {
       return
     }
     if (!(await exportAllowed())) return
-    const file = await buildBackupFile()
-    const fileName = file.name
-
-    let shareNote = ''
-    if (useShareSheet() && typeof navigator.share === 'function' && typeof navigator.canShare === 'function') {
-      if (navigator.canShare({ files: [file] })) {
-        try {
-          await navigator.share({ files: [file], title: fileName })
-          backupNotice.value = `已開啟分享面板：${fileName}`
-          return
-        } catch (e) {
-          /* 使用者按取消就不算失敗；其他錯誤則退回下載 */
-          if (e?.name === 'AbortError') return
-          shareNote = '\n（分享面板打不開，已改成直接下載）'
-        }
-      }
-    } else if (useShareSheet()) {
-      /*
-       * 手機上沒有分享面板：系統分享面板（Web Share）只在安全來源提供，
-       * 用區域網的 http://192.168.x.x 開就不會有——說清楚原因，免得以為壞了。
-       */
-      shareNote = window.isSecureContext
-        ? '\n（這個瀏覽器不支援系統分享面板，已改成直接下載）'
-        : `\n（目前網址是 ${location.origin}，不是 https，瀏覽器不提供系統分享面板，已改成直接下載。用手機開 https 的網址，或加到主畫面用 App 開，就會出現分享面板）`
-    }
-
-    const url = URL.createObjectURL(file)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = fileName
-    a.rel = 'noopener'
-    /* 有些瀏覽器要求連結真的在文件裡才肯下載 */
-    document.body.append(a)
-    a.click()
-    a.remove()
-    /* 下載不是同步完成的，太早回收會讓檔案存不出來 */
-    setTimeout(() => URL.revokeObjectURL(url), 10000)
+    const file = await buildSheetsBackupFile(currentSheet.value ? [currentSheet.value] : [])
+    const note = await handOverFile(file)
     const skipped = unreadableImages.length
       ? `\n有 ${unreadableImages.length} 張圖片讀不到、沒有放進備份：${unreadableImages
           .slice(0, 5)
           .join('、')}${unreadableImages.length > 5 ? '…' : ''}（其他資料都在）`
       : ''
-    backupNotice.value = `已匯出 ${records.value.length} 筆記錄、${persons.value.length} 位人物 → ${fileName}${skipped}${shareNote}`
+    backupNotice.value = `已匯出 ${records.value.length} 筆記錄、${persons.value.length} 位人物 → ${file.name}${skipped}${note}`
   } catch (e) {
     backupNotice.value = `匯出失敗：${e?.message ?? e}`
   }
+}
+
+/**
+ * 把一個檔案交給使用者：手機／平板先試系統分享面板，不行就退回下載。
+ * 回傳要接在訊息後面的補充說明（沒有的話是空字串）。
+ */
+async function handOverFile(file) {
+  const fileName = file.name
+  let shareNote = ''
+  if (useShareSheet() && typeof navigator.share === 'function' && typeof navigator.canShare === 'function') {
+    if (navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: fileName })
+        backupNotice.value = `已開啟分享面板：${fileName}`
+        return ''
+      } catch (e) {
+        /* 使用者按取消就不算失敗；其他錯誤則退回下載 */
+        if (e?.name === 'AbortError') return '\n（已取消分享）'
+        shareNote = '\n（分享面板打不開，已改成直接下載）'
+      }
+    }
+  } else if (useShareSheet()) {
+    /*
+     * 手機上沒有分享面板：系統分享面板（Web Share）只在安全來源提供，
+     * 用區域網的 http://192.168.x.x 開就不會有——說清楚原因，免得以為壞了。
+     */
+    shareNote = window.isSecureContext
+      ? '\n（這個瀏覽器不支援系統分享面板，已改成直接下載）'
+      : `\n（目前網址是 ${location.origin}，不是 https，瀏覽器不提供系統分享面板，已改成直接下載。用手機開 https 的網址，或加到主畫面用 App 開，就會出現分享面板）`
+  }
+
+  const url = URL.createObjectURL(file)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = fileName
+  a.rel = 'noopener'
+  /* 有些瀏覽器要求連結真的在文件裡才肯下載 */
+  document.body.append(a)
+  a.click()
+  a.remove()
+  /* 下載不是同步完成的，太早回收會讓檔案存不出來 */
+  setTimeout(() => URL.revokeObjectURL(url), 10000)
+  return shareNote
 }
 
 /* 匯入來源的名稱預設就是 JSON 檔名（去掉 .json），之後可以重新命名 */
@@ -2785,7 +2842,7 @@ function qrExport() {
   qrStatus.value = '正在準備備份檔（圖片多的話要等一下）…'
   ;(async () => {
     try {
-      const file = await buildBackupFile()
+      const file = await buildSheetsBackupFile(currentSheet.value ? [currentSheet.value] : [])
       await qrPanel.value?.sendFile(file)
       qrStatus.value =
         `已把「${file.name}」（${(file.size / 1048576).toFixed(1)} MB）交給 QR 畫面：` +
@@ -2850,7 +2907,10 @@ function onAlignDialogClose() {
 }
 
 /* ---------- 本機儲存（IndexedDB）：刷新、關掉瀏覽器都不會不見 ---------- */
+/* 這三個只追蹤「目前分頁」：切換分頁時會重新建立，才不會誤刪別的分頁 */
 const savedSigs = new Map()
+let savedRecordIds = new Set()
+let savedPersonIds = new Set()
 
 function serializeRecord(r) {
   return {
@@ -2906,11 +2966,12 @@ const plainCopy = (value) => JSON.parse(JSON.stringify(value ?? null))
 
 async function persist() {
   try {
+    const sheetId = currentSheetId.value
     const alive = new Set()
     const broken = []
     for (const r of records.value) {
       alive.add(r.id)
-      const plain = serializeRecord(r)
+      const plain = { ...serializeRecord(r), sheetId: r.sheetId || sheetId }
       const sig = signature(plain)
       if (savedSigs.get(r.id) === sig) continue
 
@@ -2940,19 +3001,48 @@ async function persist() {
       savedSigs.set(r.id, sig)
     }
     brokenImageNames.value = broken
-    for (const id of [...savedSigs.keys()]) {
+    /*
+     * 刪掉「這個分頁」已經不在清單裡的記錄。
+     * 一定要用 savedRecordIds（而不是 savedSigs 的 key）判斷：切換分頁時
+     * savedSigs 會清掉，不然會誤刪到別的分頁。
+     */
+    for (const id of [...savedRecordIds]) {
       if (alive.has(id)) continue
       await del('records', id)
-      savedSigs.delete(id)
+      savedRecordIds.delete(id)
     }
+    for (const id of alive) savedRecordIds.add(id)
 
-    await clear('persons')
+    /*
+     * 人物：只動目前分頁的。
+     * 以前是 clear('persons') 再全部重寫，多了分頁之後那樣會把別的分頁清掉。
+     */
+    const personAlive = new Set()
     for (const p of persons.value) {
+      personAlive.add(p.id)
       await put('persons', {
         id: p.id,
+        sheetId: p.sheetId || sheetId,
         name: p.name,
         isSelf: p.isSelf,
         aliases: [...(p.aliases ?? [])],
+      })
+    }
+    for (const id of [...savedPersonIds]) {
+      if (personAlive.has(id)) continue
+      await del('persons', id)
+      savedPersonIds.delete(id)
+    }
+    for (const id of personAlive) savedPersonIds.add(id)
+
+    /* 目前分頁：記下來，重新整理才會停在同一個分頁 */
+    await put('settings', { id: 'currentSheet', value: currentSheetId.value })
+    if (currentSheet.value) {
+      await put('sheets', {
+        id: currentSheet.value.id,
+        name: currentSheet.value.name,
+        seq: currentSheet.value.seq ?? 0,
+        createdAt: currentSheet.value.createdAt ?? 0,
       })
     }
     await put('settings', { id: 'defaultCurrency', value: defaultCurrency.value })
@@ -3034,6 +3124,330 @@ watch(view, async () => {
   watchPayBar()
 })
 
+/* ---------- 分頁：讀取、切換、新增／改名／刪除／合併 ---------- */
+
+/** 讀出分頁清單：至少一個；舊資料（還沒有分頁的年代）全部歸到第一個分頁 */
+async function loadSheets(sheetRows, recs, ps, settings) {
+  let list = sortSheets(
+    (sheetRows ?? []).map((s) => ({
+      id: s.id,
+      name: cleanSheetName(s.name),
+      seq: Number(s.seq) || 0,
+      createdAt: s.createdAt ?? 0,
+    })),
+  )
+  if (!list.length) {
+    const first = makeSheet(DEFAULT_SHEET_NAME, 1)
+    await put('sheets', { ...first })
+    list = [first]
+  }
+  const fallback = list[0].id
+  /* 還沒有 sheetId 的舊資料一律算第一個分頁，順手補寫回資料庫（只做一次） */
+  for (const row of recs) {
+    if (row.sheetId) continue
+    row.sheetId = fallback
+    await put('records', row)
+  }
+  for (const row of ps) {
+    if (row.sheetId) continue
+    row.sheetId = fallback
+    await put('persons', row)
+  }
+  sheets.value = list
+  const saved = settings.find((s) => s.id === 'currentSheet')?.value
+  currentSheetId.value = list.some((s) => s.id === saved) ? saved : fallback
+}
+
+/** 把某個分頁的資料裝進 records／persons（只裝目前分頁的） */
+function applySheetData(recs, ps) {
+  const id = currentSheetId.value
+  persons.value = ps
+    .filter((p) => sheetOf(p, id) === id)
+    .map((p) => ({
+      id: p.id,
+      sheetId: p.sheetId || id,
+      name: p.name,
+      isSelf: !!p.isSelf,
+      aliases: p.aliases ?? [],
+    }))
+  records.value = recs
+    .filter((r) => sheetOf(r, id) === id)
+    .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
+    .map((r) => {
+      const file = storedToFile(r)
+      const extraImages = (r.extraImages ?? [])
+        .map((img) => {
+          const extraFile = storedToFile({ ...img, fileName: `${r.fileName}-${img.id}` })
+          return extraFile
+            ? { ...img, file: extraFile, url: URL.createObjectURL(extraFile) }
+            : null
+        })
+        .filter(Boolean)
+      return {
+        ...r,
+        sheetId: r.sheetId || id,
+        file,
+        url: file ? URL.createObjectURL(file) : '',
+        extraImages,
+        ocrStatus: r.ocrStatus === 'running' ? 'pending' : r.ocrStatus,
+      }
+    })
+  seqCounter = records.value.reduce((max, r) => Math.max(max, r.seq ?? 0), 0)
+  /*
+   * 記錄指到的人物不見了（匯入對不到、資料寫到一半中斷…）就自動補回來，
+   * 名字用記錄裡存的快照。補不回來的（舊資料沒有名字）只提示，不亂補。
+   */
+  const healed = restoreMissingPersons(persons.value, records.value)
+  if (healed.restored.length) persons.value = healed.persons
+  const stillMissing = records.value.filter((r) => missingPersonIds(persons.value, r).length)
+  const personNotices = []
+  if (healed.restored.length) {
+    personNotices.push(
+      `已自動補回 ${healed.restored.length} 位人物：${healed.restored.map((p) => p.name).join('、')}`,
+    )
+  }
+  if (stillMissing.length) {
+    personNotices.push(
+      `${stillMissing.length} 筆記錄的付錢人或受益人不在人物清單裡，` +
+        '而且沒有留下名字可以補回來，請在那幾筆記錄上重新選擇。',
+    )
+  }
+  if (personNotices.length) actionNotice.value = personNotices.join('\n')
+  /* 手動新增的編號：照建立順序重排一次（刪過的話號碼會補回來） */
+  renumberManualRecords()
+  /* 換分頁等於換一批資料：追蹤用的三個集合要重新建立（不然會誤刪別的分頁） */
+  savedSigs.clear()
+  records.value.forEach((r) => savedSigs.set(r.id, signature(serializeRecord(r))))
+  savedRecordIds = new Set(records.value.map((r) => r.id))
+  savedPersonIds = new Set(persons.value.map((p) => p.id))
+}
+
+async function reloadSheetData() {
+  const [recs, ps] = await Promise.all([getAll('records'), getAll('persons')])
+  applySheetData(recs, ps)
+}
+
+/** 切換分頁：先把目前分頁存起來，再換過去 */
+async function switchSheet(id) {
+  if (!id || id === currentSheetId.value) return
+  await persist()
+  for (const r of records.value) revoke(r.url)
+  currentSheetId.value = id
+  await reloadSheetData()
+  await put('settings', { id: 'currentSheet', value: id })
+}
+
+async function addSheet() {
+  const input = await askText({
+    title: '新增分頁',
+    text: '新分頁是空白的：人物與付款記錄都從頭開始。其他設定（顏色、匯出檢查規則、備注分類…）是所有分頁共用的。',
+    value: uniqueSheetName(sheets.value, '新分頁'),
+    placeholder: '分頁名稱',
+  })
+  if (input === null) return
+  const sheet = makeSheet(uniqueSheetName(sheets.value, input), nextSheetSeq(sheets.value))
+  sheets.value = sortSheets([...sheets.value, sheet])
+  await put('sheets', { ...sheet })
+  await switchSheet(sheet.id)
+}
+
+async function renameSheet(sheet) {
+  const input = await askText({
+    title: `重新命名分頁「${sheet.name}」`,
+    text: '只改分頁名稱，裡面的記錄與人物都不會動。',
+    value: sheet.name,
+    placeholder: '分頁名稱',
+  })
+  if (input === null) return
+  const next = cleanSheetName(input, sheet.name)
+  const clash = sheets.value.some((s) => s.id !== sheet.id && s.name === next)
+  sheet.name = clash ? uniqueSheetName(sheets.value.filter((s) => s.id !== sheet.id), next) : next
+  await put('sheets', { id: sheet.id, name: sheet.name, seq: sheet.seq ?? 0, createdAt: sheet.createdAt ?? 0 })
+}
+
+async function removeSheet(sheet) {
+  if (sheets.value.length <= 1) {
+    await warn('不能刪這個分頁', '至少要留一個分頁。')
+    return
+  }
+  await persist()
+  const [recs, ps] = await Promise.all([getAll('records'), getAll('persons')])
+  const mine = recs.filter((r) => sheetOf(r, sheet.id) === sheet.id)
+  const ok = await askConfirm({
+    title: `刪除分頁「${sheet.name}」？`,
+    text: `這個分頁裡的 ${mine.length} 筆付款記錄、人物與圖片都會一起刪掉，無法復原。`,
+    confirmText: '刪除',
+    icon: 'warning',
+  })
+  if (!ok) return
+
+  for (const r of mine) await del('records', r.id)
+  for (const p of ps) if (sheetOf(p, sheet.id) === sheet.id) await del('persons', p.id)
+  await del('sheets', sheet.id)
+  sheets.value = sheets.value.filter((s) => s.id !== sheet.id)
+
+  if (currentSheetId.value === sheet.id) {
+    for (const r of records.value) revoke(r.url)
+    currentSheetId.value = sheets.value[0].id
+    savedSigs.clear()
+    savedRecordIds = new Set()
+    savedPersonIds = new Set()
+    await reloadSheetData()
+    await put('settings', { id: 'currentSheet', value: currentSheetId.value })
+  }
+}
+
+/** 把一個分頁合併進「目前分頁」：走跟匯入完全同一條路（含人物對齊） */
+async function mergeSheet(sheet) {
+  if (sheet.id === currentSheetId.value) {
+    await warn('這已經是目前的分頁', '請先切到要合併過去的目標分頁，再回來按合併。')
+    return
+  }
+  const target = currentSheet.value
+  const ok = await askConfirm({
+    title: `把「${sheet.name}」合併進「${target?.name ?? ''}」？`,
+    text: '兩邊的人物同名時會問你要用同一個人還是分開；記錄會全部帶過去，合併完原本的分頁會被刪除。',
+    confirmText: '合併',
+    icon: 'question',
+  })
+  if (!ok) return
+
+  const [recs, ps] = await Promise.all([getAll('records'), getAll('persons')])
+  const incoming = {
+    persons: ps
+      .filter((p) => sheetOf(p, sheet.id) === sheet.id)
+      .map((p) => ({ id: p.id, name: p.name, isSelf: !!p.isSelf, aliases: [...(p.aliases ?? [])] })),
+    records: recs
+      .filter((r) => sheetOf(r, sheet.id) === sheet.id)
+      .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
+      .map((r) => ({
+        ...r,
+        file: storedToFile(r),
+        extraImages: (r.extraImages ?? [])
+          .map((img) => {
+            const f = storedToFile({ ...img, fileName: `${r.fileName}-${img.id}` })
+            return f ? { ...img, file: f } : null
+          })
+          .filter(Boolean),
+      })),
+    defaultCurrency: '',
+    sheetNames: [sheet.name],
+  }
+
+  const sourceName = sheet.name
+  const probe = resolvePersons(persons.value, incoming.persons)
+  let result = null
+  if (probe.needsDecision.length) {
+    const decisions = {}
+    probe.needsDecision.forEach((p) => (decisions[p.id] = 'new'))
+    result = await new Promise((resolve) => {
+      pendingImport.value = {
+        incoming,
+        decisions,
+        needsDecision: probe.needsDecision,
+        sourceName,
+        resolve,
+      }
+      nextTick(() => alignDialogEl.value.showModal())
+    })
+    if (!result) return
+  } else {
+    result = applyImport(incoming, {}, sourceName)
+  }
+  await finishSheetMerge(sheet)
+  backupNotice.value = `已把「${sheet.name}」合併進來：新增 ${result.added} 筆記錄、${result.persons} 位人物（略過 ${result.skipped} 筆重複的）`
+}
+
+/** 合併完成後把來源分頁與它剩下的資料刪掉 */
+async function finishSheetMerge(sheet) {
+  if (sheet.id === currentSheetId.value) return
+  await persist()
+  const [recs, ps] = await Promise.all([getAll('records'), getAll('persons')])
+  for (const r of recs) if (sheetOf(r, sheet.id) === sheet.id) await del('records', r.id)
+  for (const p of ps) if (sheetOf(p, sheet.id) === sheet.id) await del('persons', p.id)
+  await del('sheets', sheet.id)
+  sheets.value = sheets.value.filter((s) => s.id !== sheet.id)
+}
+
+/**
+ * 把指定的分頁打包成一個備份檔。
+ * 目前分頁直接用記憶體裡的資料（可能剛改完、還沒寫進資料庫）；
+ * 其他分頁則從資料庫讀出來、把圖片的 bytes 還原成檔案。
+ */
+async function buildSheetsBackupFile(sheetList) {
+  unreadableImages.length = 0
+  const others = sheetList.filter((s) => s.id !== currentSheetId.value)
+  let allRecs = []
+  let allPersons = []
+  if (others.length) {
+    ;[allRecs, allPersons] = await Promise.all([getAll('records'), getAll('persons')])
+  }
+  const payloadSheets = sheetList.map((sheet) => {
+    if (sheet.id === currentSheetId.value) {
+      return {
+        name: sheet.name,
+        defaultCurrency: defaultCurrency.value,
+        persons: persons.value,
+        records: records.value,
+      }
+    }
+    return {
+      name: sheet.name,
+      defaultCurrency: defaultCurrency.value,
+      persons: allPersons
+        .filter((p) => sheetOf(p, sheet.id) === sheet.id)
+        .map((p) => ({ id: p.id, name: p.name, isSelf: !!p.isSelf, aliases: [...(p.aliases ?? [])] })),
+      records: allRecs
+        .filter((r) => sheetOf(r, sheet.id) === sheet.id)
+        .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
+        .map((r) => ({
+          ...r,
+          file: storedToFile(r),
+          extraImages: (r.extraImages ?? [])
+            .map((img) => {
+              const f = storedToFile({ ...img, fileName: `${r.fileName}-${img.id}` })
+              return f ? { ...img, file: f } : null
+            })
+            .filter(Boolean),
+        })),
+    }
+  })
+  const payload = await toBackup(payloadSheets, encodeForExport)
+  const multi = sheets.value.length > 1
+  const name = [
+    '付款記錄',
+    multi && sheetList.length === 1 ? safeFileNamePart(sheetList[0]?.name) : '',
+    multi && sheetList.length > 1 ? `${sheetList.length}個分頁` : '',
+    safeFileNamePart(selfPerson.value?.name),
+    stamp(),
+  ]
+    .filter(Boolean)
+    .join('-')
+  return new File([JSON.stringify(payload)], `${name}.json`, { type: 'application/json' })
+}
+
+/** 匯出指定的分頁（設定頁的分頁管理用） */
+async function exportSheet(sheet) {
+  try {
+    if (!(await exportAllowed())) return
+    const file = await buildSheetsBackupFile([sheet])
+    await handOverFile(file, `已匯出分頁「${sheet.name}」`)
+  } catch (e) {
+    warn('匯出失敗', String(e?.message ?? e))
+  }
+}
+
+/** 匯出全部分頁 */
+async function exportAllSheets() {
+  try {
+    if (!(await exportAllowed())) return
+    const file = await buildSheetsBackupFile(sheets.value)
+    await handOverFile(file, `已匯出全部 ${sheets.value.length} 個分頁`)
+  } catch (e) {
+    warn('匯出失敗', String(e?.message ?? e))
+  }
+}
+
 onMounted(async () => {
   /*
    * 重新整理時人可能停在設定頁，歷史記錄裡就留著那個記號；
@@ -3041,6 +3455,8 @@ onMounted(async () => {
    */
   try {
     if (history.state) history.replaceState(null, '')
+    /* 捲動由我們自己控制（見 resetScroll），不要讓瀏覽器還原到舊位置 */
+    if ('scrollRestoration' in history) history.scrollRestoration = 'manual'
   } catch {
     /* 不能操作歷史記錄就算了 */
   }
@@ -3066,58 +3482,14 @@ onMounted(async () => {
   }
 
   try {
-    const [recs, ps, settings] = await Promise.all([
+    const [recs, ps, settings, sheetRows] = await Promise.all([
       getAll('records'),
       getAll('persons'),
       getAll('settings'),
+      getAll('sheets'),
     ])
-    persons.value = ps.map((p) => ({
-      id: p.id,
-      name: p.name,
-      isSelf: !!p.isSelf,
-      aliases: p.aliases ?? [],
-    }))
-    records.value = recs
-      .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))
-      .map((r) => {
-        const file = storedToFile(r)
-        const extraImages = (r.extraImages ?? [])
-          .map((img) => {
-            const extraFile = storedToFile({ ...img, fileName: `${r.fileName}-${img.id}` })
-            return extraFile
-              ? { ...img, file: extraFile, url: URL.createObjectURL(extraFile) }
-              : null
-          })
-          .filter(Boolean)
-        return {
-          ...r,
-          file,
-          url: file ? URL.createObjectURL(file) : '',
-          extraImages,
-          ocrStatus: r.ocrStatus === 'running' ? 'pending' : r.ocrStatus,
-        }
-      })
-    seqCounter = records.value.reduce((max, r) => Math.max(max, r.seq ?? 0), 0)
-    /*
-     * 記錄指到的人物不見了（匯入對不到、資料寫到一半中斷…）就自動補回來，
-     * 名字用記錄裡存的快照。補不回來的（舊資料沒有名字）只提示，不亂補。
-     */
-    const healed = restoreMissingPersons(persons.value, records.value)
-    if (healed.restored.length) persons.value = healed.persons
-    const stillMissing = records.value.filter((r) => missingPersonIds(persons.value, r).length)
-    const personNotices = []
-    if (healed.restored.length) {
-      personNotices.push(
-        `已自動補回 ${healed.restored.length} 位人物：${healed.restored.map((p) => p.name).join('、')}`,
-      )
-    }
-    if (stillMissing.length) {
-      personNotices.push(
-        `${stillMissing.length} 筆記錄的付錢人或受益人不在人物清單裡，` +
-          '而且沒有留下名字可以補回來，請在那幾筆記錄上重新選擇。',
-      )
-    }
-    if (personNotices.length) actionNotice.value = personNotices.join('\n')
+    await loadSheets(sheetRows, recs, ps, settings)
+    applySheetData(recs, ps)
     defaultCurrency.value = settings.find((s) => s.id === 'defaultCurrency')?.value ?? ''
     /* 備注分類：第一次用給預設清單，之後以存下來的為準 */
     const savedNotes = settings.find((s) => s.id === 'noteCategories')?.value
@@ -3136,9 +3508,6 @@ onMounted(async () => {
     pauseOcr.value = settings.find((s) => s.id === 'pauseOcr')?.value === true
     const links = settings.find((s) => s.id === 'appliedShareLinks')?.value
     appliedLinks = Array.isArray(links) ? links : []
-    /* 手動新增的編號：照建立順序重排一次（刪過的話號碼會補回來） */
-    renumberManualRecords()
-    records.value.forEach((r) => savedSigs.set(r.id, signature(serializeRecord(r))))
     /* 讀完本機資料才處理分享連結，才知道哪些人物已經有了 */
     applyShareParams()
 
@@ -3210,6 +3579,79 @@ onUnmounted(() => {
         {{ backupNotice }}
         <button type="button" class="link" @click="backupNotice = ''">知道了</button>
       </p>
+
+      <!-- 分頁管理：每個分頁有自己的人物與付款記錄（其他設定共用） -->
+      <section class="card">
+        <details class="fold">
+          <summary>
+            <span class="fold-title">分頁管理</span>
+            <span class="count">{{ sheets.length }}</span>
+          </summary>
+          <div class="fold-body">
+            <p class="hint">
+              一個分頁＝一組<strong>人物＋付款記錄</strong>。切換分頁只會換這兩樣，
+              顏色、匯出檢查規則、備注分類、預設幣別這些設定是<strong>所有分頁共用</strong>的。
+              分頁只能在這裡切換；主畫面只會顯示目前分頁的資料。
+            </p>
+
+            <div class="sheet-list">
+              <div
+                v-for="s in sheets"
+                :key="s.id"
+                class="sheet-row"
+                :class="{ on: s.id === currentSheetId }"
+              >
+                <button
+                  type="button"
+                  class="sheet-pick"
+                  :title="s.id === currentSheetId ? '目前的分頁' : `切換到「${s.name}」`"
+                  @click="switchSheet(s.id)"
+                >
+                  <span class="sheet-name">{{ s.name }}</span>
+                  <span v-if="s.id === currentSheetId" class="sheet-now">目前</span>
+                </button>
+                <div class="sheet-actions">
+                  <button type="button" class="btn btn-icon" @click="renameSheet(s)">改名</button>
+                  <button type="button" class="btn btn-icon" @click="exportSheet(s)">匯出</button>
+                  <button
+                    type="button"
+                    class="btn btn-icon"
+                    :class="{ 'is-busy': s.id === currentSheetId }"
+                    :aria-disabled="s.id === currentSheetId"
+                    :title="s.id === currentSheetId ? '請先切到要合併過去的分頁' : '合併進目前的分頁'"
+                    @click="mergeSheet(s)"
+                  >
+                    合併
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-icon btn-danger"
+                    :class="{ 'is-busy': sheets.length <= 1 }"
+                    :aria-disabled="sheets.length <= 1"
+                    @click="removeSheet(s)"
+                  >
+                    刪除
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div class="head-actions">
+              <button class="btn" @click="addSheet">新增分頁</button>
+              <button class="btn" @click="exportAllSheets">匯出全部分頁</button>
+              <button class="btn" @click="importInputEl.click()">匯入備份</button>
+            </div>
+            <p class="hint">
+              「匯出全部分頁」會把每個分頁都放進同一個備份檔；「匯入備份」跟主畫面的「匯入」一樣，
+              會把檔案裡的資料<strong>全部併進目前的分頁</strong>（不會自動分成好幾個分頁）。
+            </p>
+            <p v-if="backupNotice" class="notice">
+              {{ backupNotice }}
+              <button type="button" class="link" @click="backupNotice = ''">知道了</button>
+            </p>
+          </div>
+        </details>
+      </section>
 
       <!-- 分類管理：平常收起來，按標題才展開 -->
       <section class="card">
@@ -3436,14 +3878,18 @@ onUnmounted(() => {
         <p class="hint">顏色存在本機，重新整理或重開 App 都還在；「重置」不會清掉這個設定。</p>
       </section>
 
-      <!-- 匯出與傳輸：把資料帶出去的三種方式（文字／圖片／另一台裝置） -->
+      <!-- 匯出與傳輸：把資料帶出去的三種方式（文字／圖片／另一台裝置）
+           跟「備注分類管理」一樣預設收起，點標題才展開 -->
       <section class="card">
-        <div class="card-head card-head-inline">
-          <h2>匯出與傳輸</h2>
-        </div>
-        <p class="hint">三種把資料帶出去的方式，全部在這台裝置上完成，不會上傳到任何伺服器。</p>
+        <details class="fold">
+          <summary>
+            <span class="fold-title">匯出與傳輸</span>
+            <span class="count">3</span>
+          </summary>
+          <div class="fold-body">
+            <p class="hint">三種把資料帶出去的方式，全部在這台裝置上完成，不會上傳到任何伺服器。</p>
 
-        <div class="io-list">
+            <div class="io-list">
           <section class="io-item">
             <div class="io-head">
               <h3>匯出文字（不含圖片）</h3>
@@ -3529,7 +3975,9 @@ onUnmounted(() => {
               <button type="button" class="link" @click="qrStatus = ''">知道了</button>
             </p>
           </section>
-        </div>
+            </div>
+          </div>
+        </details>
       </section>
 
       <!-- 匯出前的檢查：預設要檢查，關掉之後就不會擋 -->
@@ -3810,7 +4258,7 @@ onUnmounted(() => {
 
     <section class="card card-records" :class="{ 'is-flush': recFlush }">
       <div class="card-head">
-        <h2>付款記錄 <span class="count">{{ records.length }}</span></h2>
+        <h2>{{ sheetTitle }} <span class="count">{{ records.length }}</span></h2>
         <div ref="payBarEl" class="head-actions">
           <label class="inline-field">
             <span class="lbl"
@@ -4411,6 +4859,75 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+/* 分頁管理：一列一個分頁，左邊切換、右邊動作 */
+.sheet-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.sheet-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+
+.sheet-row.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.sheet-pick {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 120px;
+  padding: 4px 2px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 550;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sheet-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sheet-now {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.sheet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+@media (max-width: 560px) {
+  .sheet-actions .btn {
+    flex: 1 1 auto;
+  }
 }
 
 /* 「匯出與傳輸」：一張卡片裡放三種帶資料出去的方式 */
