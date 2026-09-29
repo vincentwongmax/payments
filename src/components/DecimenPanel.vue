@@ -23,7 +23,7 @@ import { shareOrSaveFile } from '../lib/util.js'
 
 /* 由 App 的 view 控制（跟設定頁一樣是一個「頁面」，不是在頁面上蓋一層） */
 const props = defineProps({ open: { type: Boolean, default: false } })
-const emit = defineEmits(['received', 'foreign', 'close'])
+const emit = defineEmits(['received', 'foreign', 'close', 'refresh'])
 
 const mode = ref('send')
 const status = ref('')
@@ -370,6 +370,10 @@ function close() {
   emit('close')
 }
 
+function refresh() {
+  emit('refresh', mode.value)
+}
+
 /* 切換傳送／接收：一樣走 enter()，離開的那一邊會一起收乾淨（串流／鏡頭都不留） */
 async function setMode(which) {
   if (mode.value === which) return
@@ -538,6 +542,12 @@ defineExpose({ sendFile, receive, close })
           接收（用鏡頭掃）
         </button>
       </div>
+      <button type="button" class="dt-refresh" title="重新整理" aria-label="重新整理" @click="refresh">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M20 7v5h-5M4 17v-5h5" />
+          <path d="M5.6 9a7 7 0 0 1 11.6-2L20 12M4 12l2.8 5a7 7 0 0 0 11.6-2" />
+        </svg>
+      </button>
       <button type="button" class="dt-close" title="關閉" aria-label="關閉" @click="close">
         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
           <path d="M6 6l12 12M18 6L6 18" />
@@ -848,6 +858,7 @@ defineExpose({ sendFile, receive, close })
   color: #eaf1ff;
 }
 
+.dt-refresh,
 .dt-close {
   flex: none;
   display: grid;

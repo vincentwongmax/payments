@@ -2940,6 +2940,12 @@ async function qrImport() {
   }
 }
 
+function refreshQrPanel(mode) {
+  cancelQrOperation()
+  if (mode === 'send') qrExport()
+  else qrImport()
+}
+
 /** 面板收到本程式的備份：離開傳輸頁並匯入 */
 async function onQrReceived(file) {
   qrStatus.value = `已收到「${file.name}」，開始匯入…`
@@ -4891,6 +4897,7 @@ onUnmounted(() => {
     @received="onQrReceived"
     @foreign="onQrForeign"
     @close="closeQrPanel"
+    @refresh="refreshQrPanel"
   />
 </template>
 
