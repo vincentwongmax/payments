@@ -61,6 +61,8 @@ async function loadRuntime() {
     }
     /* decimen 會把 <html lang> 改成它自己的語言，載入完要還原成本頁原本的 */
     const pageLang = document.documentElement.lang
+    /* 一定要在 decimen 之前裝好，才追得到它建的計時器（見 patchTimers） */
+    patchTimers()
     await Promise.all([
       import(/* @vite-ignore */ runtimeUrl('send-Bd5Iw8X4.js')),
       import(/* @vite-ignore */ runtimeUrl('receive-CLE1NPaP.js')),
@@ -129,6 +131,34 @@ const BOX_IDS = [
 /* 內容是 runtime 自己長出來的，還原時直接清空 */
 const EMPTY_IDS = ['result', 'no-signal-tips']
 
+/*
+ * 診斷數字（Live diagnostics）的每一格。decimen 會逐格寫值進去，
+ * 還原時要逐項寫回原本的「—」，不能把容器清掉（它把節點抓在閉包裡）。
+ */
+const GAUGE_IDS = ['m-cap', 'm-dec', 'm-rate', 'm-time', 'm-frames', 'm-k', 'm-block', 'm-payload']
+
+/*
+ * 設定類的下拉／勾選：還原成「載入前的值」。
+ * decimen 會在啟動相機時改這些（相機清單、decode workers 依硬體調整），
+ * 清成空白會讓下一次的選單少東西，所以是還原而不是清空。
+ */
+const FORM_IDS = [
+  'cfg-camera',
+  'cfg-width',
+  'cfg-capfps',
+  'cfg-workers',
+  'cfg-autoshow',
+  'cfg-fps',
+  'cfg-bytes',
+  'cfg-ecc',
+  'cfg-grid',
+  'cfg-size',
+  'cfg-export-format',
+  'cfg-export-fps',
+  'cfg-export-scale',
+  'cfg-export-cycles',
+]
+
 let pristine = null
 
 /** 在 decimen 還沒載入前，先記下這些節點原本的樣子 */
@@ -137,6 +167,8 @@ function snapshot() {
     ids.map((id) => {
       const el = document.getElementById(id)
       if (!el) return null
+      const isForm =
+        el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement
       return {
         id,
         withText,
@@ -145,9 +177,11 @@ function snapshot() {
         display: el.style.display,
         className: el.className,
         disabled: el.disabled,
+        value: isForm ? el.value : undefined,
+        checked: el instanceof HTMLInputElement && el.type === 'checkbox' ? el.checked : undefined,
       }
     })
-  pristine = [...grab(TEXT_IDS, true), ...grab(BOX_IDS, false)]
+  pristine = [...grab(TEXT_IDS, true), ...grab(BOX_IDS, false), ...grab(FORM_IDS, false)]
 }
 
 /** 把 decimen 動過的節點還原成全新的樣子 */
@@ -161,10 +195,33 @@ function restoreSnapshot() {
     el.className = saved.className
     if (saved.disabled !== undefined) el.disabled = saved.disabled
     if (saved.withText) el.textContent = saved.text
-    /* 檔案欄位與文字框要另外清值（textContent 清不掉 value） */
-    if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) el.value = ''
+    /* 表單元件的值還原成原本的（清成空字串會讓下一次的選單少東西） */
+    if (saved.value !== undefined) el.value = saved.value
+    if (saved.checked !== undefined) el.checked = saved.checked
+    /* 沒有特別記錄值的輸入框（檔案欄位、文字框）一律清空 */
+    if (
+      saved.value === undefined &&
+      (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)
+    ) {
+      el.value = ''
+    }
   }
   for (const id of EMPTY_IDS) document.getElementById(id)?.replaceChildren()
+  /*
+   * 診斷數字：decimen 是逐格填進去的（capture fps、decode fps、goodput…）。
+   * 注意不能把容器清空——它把這些節點抓在閉包裡，清掉會讓它下次寫入時爆掉，
+   * 所以要逐項還原成原本的文字。
+   */
+  for (const id of GAUGE_IDS) {
+    const el = document.getElementById(id)
+    if (el) el.textContent = '—'
+  }
+  document.getElementById('progress')?.setAttribute('aria-valuenow', '0')
+  const bar = document.getElementById('bar')
+  if (bar) bar.style.width = ''
+  /* 送出／接收的狀態文字與說明也一起回到待機 */
+  const cameraActual = document.getElementById('camera-actual')
+  if (cameraActual) cameraActual.textContent = 'Applied when the camera starts.'
   /* 送出模式回到「檔案」，並讓 decimen 自己切換對應的面板 */
   const radio = document.querySelector('#mode-picker input[value="file"]')
   if (radio && !radio.checked) {
@@ -177,9 +234,35 @@ function restoreSnapshot() {
 function teardown() {
   stopCamera()
   stopSend()
+  /* decimen 的即時診斷計時器要一起停掉，不然它會在背景一直跑 */
+  clearPendingTimers()
   /* decimen 的說明／分享對話框是 top layer，祖先 display:none 蓋不掉，要自己關 */
   for (const dialog of document.querySelectorAll('#decimen-app dialog[open]')) dialog.close()
   document.body.classList.remove('qr-full')
+}
+
+/**
+ * 收掉 decimen 內部「這一趟」的狀態。
+ * 它的解碼器與串流都是模組層的單例，跑過一次就留著上一趟的資料（進度、完成旗標、
+ * 已收到的影格…）。不重置的話第二次掃描會沿用上一次的狀態，下一次就少東少西。
+ *
+ * 它沒有公開的重置 API，所以用「使用者操作」驅動它自己的收尾路徑：
+ *   - 傳送中：#file-picker-button 就是它自己的「Stop transfer」，
+ *     會停掉串流並收掉預覽（stopSend）
+ *   - 接收中：decimen 沒有做停止鈕，直接停掉鏡頭（stopCamera），
+ *     並在下次按「Start camera」時由它自己重新初始化
+ * 剩下的節點狀態由 restoreSnapshot() 還原。
+ */
+function resetInnerState() {
+  stopSend()
+  stopCamera()
+}
+
+/** 清掉這次傳輸的 runtime 與畫面狀態，避免關閉後留下中斷進度 */
+function resetSession() {
+  teardown()
+  resetInnerState()
+  restoreSnapshot()
 }
 
 /** 傳送中就把 decimen 自己的「Stop transfer」按下去，內部串流才會真的停 */
@@ -197,8 +280,7 @@ async function enter(which) {
   foreign.value = null
   foreignNote.value = ''
   await nextTick()
-  teardown()
-  restoreSnapshot()
+  resetSession()
   /* 掃描頁固定先提示要按哪一顆（匯出那邊由 decimen 自己的狀態列負責） */
   if (which === 'receive') status.value = '按「Start camera」開始掃描對方螢幕上的 QR 動畫'
   await ensureLoaded()
@@ -279,7 +361,7 @@ async function shareForeign() {
 
 /** ✕ 或手機返回：真的收掉面板（歷史記錄由 App 負責，這裡只收拾乾淨） */
 function close() {
-  teardown()
+  resetSession()
   emit('close')
 }
 
@@ -287,6 +369,62 @@ function close() {
 async function setMode(which) {
   if (mode.value === which) return
   await enter(which)
+}
+
+/*
+ * 這一頁關掉之後，decimen 自己的「即時診斷」計時器還會繼續跑（實測：關掉之後
+ * capture fps 還從 14 一路掉到 0，等於有一個背景 timer 一直在動）。它把 timer id
+ * 存在模組層的變數裡、外面拿不到，所以在面板這一側把它攔下來：
+ * 在 decimen 之前先包一層 setInterval／setTimeout，記下所有「存活中的」id，
+ * 收掉面板時只清掉還沒被清掉的那些。
+ *
+ * 只清計時器、不動 decimen 的其他邏輯；用 requestAnimationFrame 畫 QR 的迴圈
+ * 不受影響（那個是它自己的繪圖節奏，本來就會隨畫面停止）。
+ */
+let pendingTimers = new Set()
+let timerPatched = false
+
+function patchTimers() {
+  if (timerPatched) return
+  timerPatched = true
+  const originalSetInterval = window.setInterval
+  const originalClearInterval = window.clearInterval
+  const originalSetTimeout = window.setTimeout
+  const originalClearTimeout = window.clearTimeout
+
+  window.setInterval = function (...args) {
+    const id = originalSetInterval.apply(this, args)
+    pendingTimers.add(id)
+    return id
+  }
+  window.clearInterval = function (id) {
+    pendingTimers.delete(id)
+    return originalClearInterval.call(this, id)
+  }
+  window.setTimeout = function (...args) {
+    /* 只追蹤「比較久」的排程；短暫的 UI 排程不需要管，免得集合一直長大 */
+    const delay = Number(args[1]) || 0
+    const id = originalSetTimeout.apply(this, args)
+    if (delay >= 200) {
+      pendingTimers.add(id)
+      /* 時間到就自己從集合移除 */
+      originalSetTimeout.call(window, () => pendingTimers.delete(id), delay + 50)
+    }
+    return id
+  }
+  window.clearTimeout = function (id) {
+    pendingTimers.delete(id)
+    return originalClearTimeout.call(this, id)
+  }
+}
+
+/** 把還在跑的計時器都停掉（decimen 的即時診斷就是靠這個才不會一直在背景跑） */
+function clearPendingTimers() {
+  for (const id of [...pendingTimers]) {
+    clearInterval(id)
+    clearTimeout(id)
+  }
+  pendingTimers.clear()
 }
 
 function watchResult() {
@@ -351,7 +489,7 @@ onMounted(() => {
 watch(
   () => props.open,
   (isOpen) => {
-    if (!isOpen) teardown()
+    if (!isOpen) resetSession()
   },
 )
 
