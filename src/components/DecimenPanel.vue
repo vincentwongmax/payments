@@ -36,7 +36,12 @@ const foreignNote = ref('')
 let loaded = null
 let cssInjected = false
 
-const runtimeUrl = (name) => new URL(`decimen-rt/${name}`, document.baseURI).href
+const runtimeVersion = typeof __BUILD_TIME__ === 'string' ? __BUILD_TIME__ : 'development'
+const runtimeUrl = (name) => {
+  const url = new URL(`decimen-rt/${name}`, document.baseURI)
+  url.searchParams.set('build', runtimeVersion)
+  return url.href
+}
 
 async function loadRuntime() {
   if (loaded) return loaded
@@ -253,7 +258,14 @@ function resetInnerState() {
 
 function resetSession() {
   teardown()
-  window.__appResetDecimenReceive?.()
+  if (loaded) {
+    const resetReceive = window.__appResetDecimenReceive
+    if (typeof resetReceive !== 'function') {
+      failed.value = 'QR 接收程式版本不一致，請重新整理 App 後再試。'
+    } else if (!resetReceive()) {
+      failed.value = 'QR 接收狀態未能清乾淨，請重新整理 App 後再試。'
+    }
+  }
   resetInnerState()
   restoreSnapshot()
 }

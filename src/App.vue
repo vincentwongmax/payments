@@ -710,12 +710,13 @@ const openQrPanel = () => {
 }
 
 const closeQrPanel = () => {
-  /* 有自己補的那筆歷史記錄就退回去（讓 popstate 負責切畫面） */
-  if (history.state?.[DECIMEN_STATE]) {
-    history.back()
-    return
-  }
+  const hasQrHistory = !!history.state?.[DECIMEN_STATE]
+  cancelQrOperation()
   view.value = 'settings'
+  unlockScrollIfIdle()
+  resetScroll()
+  /* 保留返回鍵的歷史順序；畫面先同步關閉，不等非同步 popstate。 */
+  if (hasQrHistory) history.back()
 }
 
 /* ---------- 設定頁 ---------- */
@@ -2870,6 +2871,13 @@ async function exportImages(compress) {
 const qrBusy = ref(false)
 const qrStatus = ref('')
 const qrPanel = ref(null)
+let qrOperation = 0
+
+function cancelQrOperation() {
+  qrOperation++
+  qrBusy.value = false
+  qrStatus.value = ''
+}
 
 /* 相機只在安全來源提供（https 或 localhost） */
 const qrSecure = () => !!window.isSecureContext
@@ -2897,20 +2905,23 @@ function qrExport() {
     return
   }
 
+  const operation = ++qrOperation
   openQrPanel()
   qrBusy.value = true
   qrStatus.value = '正在準備備份檔（圖片多的話要等一下）…'
   ;(async () => {
     try {
       const file = await buildSheetsBackupFile(currentSheet.value ? [currentSheet.value] : [])
+      if (operation !== qrOperation || view.value !== 'decimen') return
       await qrPanel.value?.sendFile(file)
+      if (operation !== qrOperation || view.value !== 'decimen') return
       qrStatus.value =
         `已把「${file.name}」（${(file.size / 1048576).toFixed(1)} MB）交給 QR 畫面：` +
         '請把這台手機亮度調到最亮、兩台都拿穩，讓對方掃這個畫面。'
     } catch (e) {
-      qrStatus.value = `準備備份檔失敗：${e?.message ?? e}`
+      if (operation === qrOperation) qrStatus.value = `準備備份檔失敗：${e?.message ?? e}`
     } finally {
-      qrBusy.value = false
+      if (operation === qrOperation) qrBusy.value = false
     }
   })()
 }
@@ -2918,12 +2929,14 @@ function qrExport() {
 /** QR CODE 匯入：切到傳輸頁的掃描畫面；面板收到檔案後會自己把檔案交回來（見 onQrReceived） */
 async function qrImport() {
   if (!qrSecure()) return qrSecureWarn()
+  const operation = ++qrOperation
   openQrPanel()
   try {
     await qrPanel.value?.receive()
+    if (operation !== qrOperation || view.value !== 'decimen') return
     qrStatus.value = '掃描中：把鏡頭對準對方手機上的 QR 動畫（距離 15～30 公分）'
   } catch (e) {
-    qrStatus.value = `開啟掃描畫面失敗：${e?.message ?? e}`
+    if (operation === qrOperation) qrStatus.value = `開啟掃描畫面失敗：${e?.message ?? e}`
   }
 }
 

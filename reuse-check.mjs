@@ -170,6 +170,12 @@ const hasResetHook = await evaluate(`(() => {
   return true
 })()`)
 check('接收 runtime：提供完整 session 重置入口', hasResetHook === true)
+const receiveRuntimeUrl = await evaluate(`performance.getEntriesByType('resource').find((entry) => entry.name.includes('receive-CLE1NPaP.js'))?.name ?? ''`)
+check(
+  '接收 runtime：請求 URL 含建置版本，避免 PWA 命中舊 bundle 快取',
+  !!receiveRuntimeUrl && !!new URL(receiveRuntimeUrl).searchParams.get('build'),
+  receiveRuntimeUrl,
+)
 
 /* 模擬接收中斷時 runtime 留下的進度 DOM */
 await evaluate(`(() => {
@@ -189,6 +195,8 @@ await evaluate(`document.querySelector('.dt-close').click()`)
 await sleep(1200)
 const closedProgress = j(
   await evaluate(`JSON.stringify({
+    settingsVisible: getComputedStyle(document.querySelector('.view-settings')).display !== 'none',
+    rootOpen: document.querySelector('.dt-root').classList.contains('is-open'),
     progress: document.getElementById('progress').style.display,
     status: document.getElementById('progress-status').style.display,
     value: document.getElementById('progress').getAttribute('aria-valuenow'),
@@ -202,6 +210,8 @@ check(
   '按右上角關閉：runtime session 與進度 DOM 都確實清空',
   closedProgress?.resetCalls >= 1 &&
     closedProgress?.resetOk === true &&
+    closedProgress?.settingsVisible === true &&
+    closedProgress?.rootOpen === false &&
     closedProgress?.progress === 'none' &&
     closedProgress?.status === 'none' &&
     closedProgress?.value === '0' &&
