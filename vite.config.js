@@ -28,6 +28,9 @@ const CONTENT_TYPES = {
 
 const RECEIVE_RUNTIME = 'receive-CLE1NPaP.js'
 const RECEIVE_STATE_MARKER = 'let w=null,u=null,we="",K=0,z=0,T=!1,be=!1,re;'
+const RECEIVE_WORKER_MARKER = 'this.workers.push(o),this.busy.push(!1)'
+const RECEIVE_WORKER_RECOVERY =
+  'o.onerror=e=>{e.preventDefault();const count=this.workers.length;this.resize(0);this.resize(count)},this.workers.push(o),this.busy.push(!1)'
 const RECEIVE_RESET_HOOK = `
 window.__appResetDecimenReceive = () => {
   T = true
@@ -67,7 +70,11 @@ function patchReceiveRuntime(name, source) {
   if (!source.includes(RECEIVE_STATE_MARKER)) {
     throw new Error(`無法確認 ${RECEIVE_RUNTIME} 的接收狀態，停止發布以免 QR 傳輸無法重置`)
   }
-  return `${source}\n${RECEIVE_RESET_HOOK}`
+  if (source.split(RECEIVE_WORKER_MARKER).length !== 2) {
+    throw new Error(`無法確認 ${RECEIVE_RUNTIME} 的 worker pool，停止發布以免接收速度持續下降`)
+  }
+  const recoverable = source.replace(RECEIVE_WORKER_MARKER, RECEIVE_WORKER_RECOVERY)
+  return `${recoverable}\n${RECEIVE_RESET_HOOK}`
 }
 
 /* 只允許直接躺在 runtime 目錄裡的檔案，避免被 ../ 走出目錄 */

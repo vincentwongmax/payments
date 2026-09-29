@@ -121,6 +121,18 @@ for (let i = 0; i < 40; i++) {
   await sleep(400)
 }
 
+await evaluate(`(() => {
+  const NativeWorker = window.Worker
+  window.__decoderWorkers = []
+  window.Worker = class extends NativeWorker {
+    constructor(...args) {
+      super(...args)
+      if (String(args[0]).includes('worker-CAMEZaVI.js')) window.__decoderWorkers.push(this)
+    }
+  }
+  return true
+})()`)
+
 /* ---------- 第一次：開鏡頭、跑一下 ---------- */
 await goReceive()
 await evaluate(`document.getElementById('start').click()`)
@@ -157,6 +169,28 @@ for (let i = 0; i < 20; i++) {
 }
 check('第一次掃描：即時診斷有在跑（capture fps 出現數字）', /\d/.test(firstGauges), firstGauges)
 
+const workerPoolRecovery = j(
+  await evaluate(`JSON.stringify((() => {
+    const workers = window.__decoderWorkers ?? []
+    const before = workers.length
+    const failed = workers[before - 1]
+    if (!failed || typeof failed.onerror !== 'function') return { before, after: before, recovered: false }
+    failed.onerror(new ErrorEvent('error', { message: 'simulated decoder crash', cancelable: true }))
+    const after = workers.length
+    const replacements = workers.slice(before)
+    return {
+      before,
+      after,
+      recovered: before > 0 && after === before * 2 && replacements.every((worker) => typeof worker.onerror === 'function'),
+    }
+  })())`),
+)
+check(
+  'decoder worker 發生錯誤後：busy worker pool 自動整池重建',
+  workerPoolRecovery?.recovered === true,
+  JSON.stringify(workerPoolRecovery),
+)
+
 const hasResetHook = await evaluate(`(() => {
   const reset = window.__appResetDecimenReceive
   if (typeof reset !== 'function') return false
@@ -176,6 +210,8 @@ check(
   !!receiveRuntimeUrl && !!new URL(receiveRuntimeUrl).searchParams.get('build'),
   receiveRuntimeUrl,
 )
+const workerRecovery = await evaluate(`fetch(${JSON.stringify(receiveRuntimeUrl)}).then((response) => response.text()).then((source) => source.includes('o.onerror=e=>{e.preventDefault();const count=this.workers.length;this.resize(0);this.resize(count)}'))`)
+check('接收 runtime：worker 崩潰會重建 decoder pool，釋放卡住的 busy slot', workerRecovery === true)
 
 /* 模擬接收中斷時 runtime 留下的進度 DOM */
 await evaluate(`(() => {
