@@ -1,7 +1,7 @@
 /*
  * 第二輪驗證：QR 傳輸頁「關掉再打開」能不能真的再用一次
  *   1. 關掉之後，decimen 的背景計時器（即時診斷）不會繼續跑
- *   2. 再打開時畫面回到全新（含診斷數字、「Starting…」的按鈕、上一顆收到的檔案）
+ *   2. 關閉時收起進度 DOM，再打開接收頁會恢復中斷中的進度
  *   3. 再打開之後相機還開得起來，而且進度條／狀態列都還在、可以用
  */
 import { spawn } from 'node:child_process'
@@ -182,15 +182,7 @@ const closedProgress = j(
     label: document.getElementById('progress-label').textContent,
   })`),
 )
-check(
-  '關閉之後：中斷的進度條與文字清空',
-  closedProgress?.progress === 'none' &&
-    closedProgress?.status === 'none' &&
-    closedProgress?.value === '0' &&
-    closedProgress?.width === '' &&
-    closedProgress?.label === '0% · 0 frames',
-  JSON.stringify(closedProgress),
-)
+check('關閉之後：收起頁面時先清掉舊 DOM', closedProgress?.progress === 'none' && closedProgress?.status === 'none', JSON.stringify(closedProgress))
 const gaugesA = await gauges()
 await sleep(4000)
 const gaugesB = await gauges()
@@ -213,20 +205,26 @@ const second = j(
     resultLinks: document.querySelectorAll('#result a.download').length,
     progress: getComputedStyle(document.getElementById('progress')).display,
     progressStatus: getComputedStyle(document.getElementById('progress-status')).display,
+    progressValue: document.getElementById('progress').getAttribute('aria-valuenow'),
+    progressWidth: document.getElementById('bar').style.width,
+    progressLabel: document.getElementById('progress-label').textContent,
     cameraActual: document.getElementById('camera-actual').textContent.trim(),
     cameraOptions: document.getElementById('cfg-camera').options.length,
   })`),
 )
 check(
-  '重新打開：診斷數字回到「—」、按鈕回到「Start camera」、上一顆收到的檔案清掉',
+  '重新打開：中斷進度恢復，診斷與相機按鈕回到待機',
   second?.open === true &&
     !/\d/.test(second?.gauges ?? 'x') &&
     second?.startText === 'Start camera' &&
     second?.startDisabled === false &&
     second?.hasStream === false &&
     second?.resultLinks === 0 &&
-    second?.progress === 'none' &&
-    second?.progressStatus === 'none',
+    second?.progress === 'block' &&
+    second?.progressStatus === 'flex' &&
+    second?.progressValue === '42' &&
+    second?.progressWidth === '42%' &&
+    second?.progressLabel === '42% · interrupted',
   JSON.stringify(second),
 )
 check(
@@ -247,6 +245,8 @@ const secondRun = j(
     progressExists: !!document.getElementById('progress'),
     barExists: !!document.getElementById('bar'),
     statusExists: !!document.getElementById('progress-status'),
+    progressValue: document.getElementById('progress').getAttribute('aria-valuenow'),
+    progressWidth: document.getElementById('bar').style.width,
     stats: document.getElementById('stats').innerText.trim(),
   })`),
 )
@@ -256,7 +256,9 @@ check(
     secondRun?.preview === '' &&
     secondRun?.progressExists === true &&
     secondRun?.barExists === true &&
-    secondRun?.statusExists === true,
+    secondRun?.statusExists === true &&
+    secondRun?.progressValue === '42' &&
+    secondRun?.progressWidth === '42%',
   JSON.stringify(secondRun),
 )
 let secondGauges = ''

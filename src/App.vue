@@ -1587,6 +1587,7 @@ function onDiagPaste(event) {
 const pasteDialogEl = ref(null)
 const pasteBoxEl = ref(null)
 const pasteHint = ref('')
+let pasteTargetRecord = null
 
 /** 把 blob:/data: 的網址抓回來變成檔案（Safari 長按貼上時只會給 DOM 的 <img>） */
 async function urlToFile(url, name) {
@@ -1601,6 +1602,7 @@ async function urlToFile(url, name) {
 function closePasteDialog() {
   const box = pasteBoxEl.value
   if (box) box.innerHTML = ''
+  pasteTargetRecord = null
   pasteDialogEl.value?.close?.()
 }
 
@@ -1719,21 +1721,23 @@ async function extractPastedFiles(box, tag = '貼上', log = null) {
 async function harvestPasteBox() {
   const box = pasteBoxEl.value
   if (!box) return 0
+  const targetRecord = pasteTargetRecord
   await waitForPastedImages(box)
   const files = await extractPastedFiles(box, '貼上')
   if (!files.length) {
     closePasteDialog()
-    backupNotice.value =
-      '這次貼上的內容裡沒有可用的圖片。\n請再試一次，或改用「上傳圖片」從相簿選圖。'
+    const message = '這次貼上的內容裡沒有可用的圖片。\n請再試一次，或改用「上傳圖片」從相簿選圖。'
+    if (targetRecord) viewerMsg.value = message
+    else backupNotice.value = message
     return 0
   }
   try {
-    const added = await addFiles(files)
+    const added = targetRecord ? await addViewerFiles(targetRecord, files) : await addFiles(files)
     closePasteDialog()
-    if (added > 0) {
+    if (added > 0 && !targetRecord) {
       /* 明確告訴使用者：跟一般上傳一樣，已經變成記錄了（辨識中） */
       backupNotice.value = `已貼上 ${files.length} 張圖片，新增 ${added} 筆記錄（和「上傳圖片」一樣，會自動辨識金額與時間）`
-    } else {
+    } else if (!targetRecord) {
       backupNotice.value = `抓到了 ${files.length} 張圖，但沒有新增記錄。\n${
         actionNotice.value || '（沒有其他說明）'
       }`
@@ -1741,7 +1745,9 @@ async function harvestPasteBox() {
     return added
   } catch (e) {
     closePasteDialog()
-    backupNotice.value = `貼上圖片失敗：${e?.message ?? e}\n請再試一次，或改用「上傳圖片」。`
+    const message = `貼上圖片失敗：${e?.message ?? e}\n請再試一次，或改用「上傳圖片」。`
+    if (targetRecord) viewerMsg.value = message
+    else backupNotice.value = message
     return 0
   }
 }
@@ -1752,8 +1758,9 @@ function onPasteBox(event) {
   )
   if (files.length) {
     event.preventDefault()
+    const targetRecord = pasteTargetRecord
     closePasteDialog()
-    requireSelf(() => addFiles(files))
+    requireSelf(() => (targetRecord ? addViewerFiles(targetRecord, files) : addFiles(files)))
     return
   }
   /* 剪貼簿沒給檔案：等 Safari 把圖插進 DOM，再抓出來（文字一律丟掉） */
@@ -1764,20 +1771,23 @@ function onPasteBox(event) {
  * 彈出貼上框：打開後自動對焦貼上框（iOS 才會出現內建「貼上」選單），
  * 但貼上框有 inputmode="none"，所以不會跳鍵盤、也不會把畫面放大。
  */
-function openPasteDialog(message) {
+function openPasteDialog(message, targetRecord = null) {
   pasteHint.value = message
+  pasteTargetRecord = targetRecord
   pasteDialogEl.value?.showModal()
   nextTick(() => pasteBoxEl.value?.focus())
 }
 
-async function pasteImages() {
-  actionNotice.value = ''
+async function pasteImages(targetRecord = null) {
+  if (targetRecord?.locked) return
+  if (!targetRecord) actionNotice.value = ''
   requireSelf(async () => {
     if (typeof navigator.clipboard?.read !== 'function') {
       openPasteDialog(
         window.isSecureContext
           ? '這個瀏覽器不能直接讀取剪貼簿。\n請長按下面那格，選「貼上」。'
           : `目前網址是 ${location.origin}，不是 https，瀏覽器不給用剪貼簿。\n請長按下面那格，選「貼上」，一樣可以把圖加進來。`,
+        targetRecord,
       )
       return
     }
@@ -1794,12 +1804,17 @@ async function pasteImages() {
       if (!files.length) {
         openPasteDialog(
           `剪貼簿 API 讀不到圖片（讀到 ${items.length} 個項目）。\n請長按下面那格，選「貼上」。`,
+          targetRecord,
         )
         return
       }
-      addFiles(files)
+      if (targetRecord) await addViewerFiles(targetRecord, files)
+      else addFiles(files)
     } catch (e) {
-      openPasteDialog(`讀不到剪貼簿（${e?.message ?? e}）。\n請長按下面那格，選「貼上」。`)
+      openPasteDialog(
+        `讀不到剪貼簿（${e?.message ?? e}）。\n請長按下面那格，選「貼上」。`,
+        targetRecord,
+      )
     }
   })
 }
@@ -2100,7 +2115,11 @@ const moreName = ref('')
 function openMoreRecord(record) {
   moreRecord.value = record
   moreName.value = record?.fileName ?? ''
-  nextTick(() => moreDialogEl.value?.showModal())
+  nextTick(() => {
+    const dialog = moreDialogEl.value
+    dialog?.showModal()
+    dialog?.focus?.()
+  })
 }
 
 const closeMoreRecord = () => moreDialogEl.value?.close()
@@ -2319,7 +2338,10 @@ function onPlainPick(event) {
 async function addViewerImages(event) {
   const files = [...(event.target.files ?? [])]
   event.target.value = ''
-  const record = viewing.value
+  return addViewerFiles(viewing.value, files)
+}
+
+async function addViewerFiles(record, files) {
   if (!record || !files.length) return
   const notices = []
   const added = []
@@ -2368,6 +2390,13 @@ async function addViewerImages(event) {
   if (notices.length) {
     viewerMsg.value = `${viewerMsg.value ? `${viewerMsg.value}；` : ''}${notices.join('；')}`
   }
+  return added.length
+}
+
+function pasteViewerImages() {
+  const record = viewing.value
+  if (!record || record.locked) return
+  pasteImages(record)
 }
 
 const zoomBy = (factor) => {
@@ -4551,7 +4580,7 @@ onUnmounted(() => {
     </dialog>
 
     <!-- 更多：鎖定／解除與刪除（刪除鈕從卡片搬到這裡，免得誤按） -->
-    <dialog ref="moreDialogEl" class="dialog more" @close="moreRecord = null">
+    <dialog ref="moreDialogEl" class="dialog more" autofocus @close="moreRecord = null">
       <h3 class="dialog-head">更多</h3>
       <div v-if="moreRecord" class="dialog-body">
         <p class="more-title">
@@ -4677,6 +4706,15 @@ onUnmounted(() => {
           <template v-if="!viewing.locked">
             <button type="button" class="btn btn-icon" aria-label="上傳圖片" title="上傳圖片" @click="viewerPickEl.click()">
               上傳
+            </button>
+            <button
+              type="button"
+              class="btn btn-icon"
+              aria-label="貼上圖片"
+              title="貼上圖片"
+              @click="pasteViewerImages"
+            >
+              貼上
             </button>
             <button
               type="button"

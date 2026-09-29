@@ -242,27 +242,57 @@ function teardown() {
 }
 
 /**
- * 收掉 decimen 內部「這一趟」的狀態。
- * 它的解碼器與串流都是模組層的單例，跑過一次就留著上一趟的資料（進度、完成旗標、
- * 已收到的影格…）。不重置的話第二次掃描會沿用上一次的狀態，下一次就少東少西。
- *
- * 它沒有公開的重置 API，所以用「使用者操作」驅動它自己的收尾路徑：
- *   - 傳送中：#file-picker-button 就是它自己的「Stop transfer」，
- *     會停掉串流並收掉預覽（stopSend）
- *   - 接收中：decimen 沒有做停止鈕，直接停掉鏡頭（stopCamera），
- *     並在下次按「Start camera」時由它自己重新初始化
- * 剩下的節點狀態由 restoreSnapshot() 還原。
+ * 停止鏡頭與傳送串流。接收解碼器是模組層單例，沒有公開的重置 API；
+ * 未完成的接收工作階段會保留在 runtime，關閉面板時由 pausedReceiveProgress 暫存其畫面，
+ * 重新開啟接收頁後再顯示，讓 runtime 收到相同 session 的影格時能繼續更新進度。
  */
 function resetInnerState() {
   stopSend()
   stopCamera()
 }
 
-/** 清掉這次傳輸的 runtime 與畫面狀態，避免關閉後留下中斷進度 */
+/** 清理鏡頭、計時器與畫面；未完成的接收進度由 rememberReceiveProgress 另行保存 */
 function resetSession() {
   teardown()
   resetInnerState()
   restoreSnapshot()
+}
+
+let pausedReceiveProgress = null
+
+function rememberReceiveProgress() {
+  if (mode.value !== 'receive') return
+  const result = document.getElementById('result')
+  if (result?.querySelector('.done, .failed, a.download')) {
+    pausedReceiveProgress = null
+    return
+  }
+  const progress = document.getElementById('progress')
+  const progressStatus = document.getElementById('progress-status')
+  if (progress?.style.display === 'none' || progressStatus?.style.display === 'none') return
+  pausedReceiveProgress = {
+    value: progress?.getAttribute('aria-valuenow') ?? '0',
+    width: document.getElementById('bar')?.style.width ?? '',
+    label: document.getElementById('progress-label')?.textContent ?? '0% · 0 frames',
+    eta: document.getElementById('eta-label')?.textContent ?? 'Estimating time…',
+  }
+}
+
+function restoreReceiveProgress() {
+  if (!pausedReceiveProgress) return
+  const { value, width, label, eta } = pausedReceiveProgress
+  const progress = document.getElementById('progress')
+  const progressStatus = document.getElementById('progress-status')
+  progress?.setAttribute('aria-valuenow', value)
+  if (progress) progress.style.display = 'block'
+  if (progressStatus) progressStatus.style.display = 'flex'
+  const bar = document.getElementById('bar')
+  if (bar) bar.style.width = width
+  const progressLabel = document.getElementById('progress-label')
+  if (progressLabel) progressLabel.textContent = label
+  const etaLabel = document.getElementById('eta-label')
+  if (etaLabel) etaLabel.textContent = eta
+  pausedReceiveProgress = null
 }
 
 /** 傳送中就把 decimen 自己的「Stop transfer」按下去，內部串流才會真的停 */
@@ -274,6 +304,7 @@ function stopSend() {
 
 /** 進到某一頁：收乾淨上一次的、還原成全新、再確認 runtime 已經載入 */
 async function enter(which) {
+  if (mode.value === 'receive' && which !== 'receive') rememberReceiveProgress()
   mode.value = which
   failed.value = ''
   status.value = ''
@@ -281,6 +312,7 @@ async function enter(which) {
   foreignNote.value = ''
   await nextTick()
   resetSession()
+  if (which === 'receive') restoreReceiveProgress()
   /* 掃描頁固定先提示要按哪一顆（匯出那邊由 decimen 自己的狀態列負責） */
   if (which === 'receive') status.value = '按「Start camera」開始掃描對方螢幕上的 QR 動畫'
   await ensureLoaded()
@@ -361,6 +393,7 @@ async function shareForeign() {
 
 /** ✕ 或手機返回：真的收掉面板（歷史記錄由 App 負責，這裡只收拾乾淨） */
 function close() {
+  rememberReceiveProgress()
   resetSession()
   emit('close')
 }
@@ -489,7 +522,10 @@ onMounted(() => {
 watch(
   () => props.open,
   (isOpen) => {
-    if (!isOpen) resetSession()
+    if (!isOpen) {
+      rememberReceiveProgress()
+      resetSession()
+    }
   },
 )
 
