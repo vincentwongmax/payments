@@ -251,48 +251,11 @@ function resetInnerState() {
   stopCamera()
 }
 
-/** 清理鏡頭、計時器與畫面；未完成的接收進度由 rememberReceiveProgress 另行保存 */
 function resetSession() {
   teardown()
+  window.__appResetDecimenReceive?.()
   resetInnerState()
   restoreSnapshot()
-}
-
-let pausedReceiveProgress = null
-
-function rememberReceiveProgress() {
-  if (mode.value !== 'receive') return
-  const result = document.getElementById('result')
-  if (result?.querySelector('.done, .failed, a.download')) {
-    pausedReceiveProgress = null
-    return
-  }
-  const progress = document.getElementById('progress')
-  const progressStatus = document.getElementById('progress-status')
-  if (progress?.style.display === 'none' || progressStatus?.style.display === 'none') return
-  pausedReceiveProgress = {
-    value: progress?.getAttribute('aria-valuenow') ?? '0',
-    width: document.getElementById('bar')?.style.width ?? '',
-    label: document.getElementById('progress-label')?.textContent ?? '0% · 0 frames',
-    eta: document.getElementById('eta-label')?.textContent ?? 'Estimating time…',
-  }
-}
-
-function restoreReceiveProgress() {
-  if (!pausedReceiveProgress) return
-  const { value, width, label, eta } = pausedReceiveProgress
-  const progress = document.getElementById('progress')
-  const progressStatus = document.getElementById('progress-status')
-  progress?.setAttribute('aria-valuenow', value)
-  if (progress) progress.style.display = 'block'
-  if (progressStatus) progressStatus.style.display = 'flex'
-  const bar = document.getElementById('bar')
-  if (bar) bar.style.width = width
-  const progressLabel = document.getElementById('progress-label')
-  if (progressLabel) progressLabel.textContent = label
-  const etaLabel = document.getElementById('eta-label')
-  if (etaLabel) etaLabel.textContent = eta
-  pausedReceiveProgress = null
 }
 
 /** 傳送中就把 decimen 自己的「Stop transfer」按下去，內部串流才會真的停 */
@@ -304,7 +267,6 @@ function stopSend() {
 
 /** 進到某一頁：收乾淨上一次的、還原成全新、再確認 runtime 已經載入 */
 async function enter(which) {
-  if (mode.value === 'receive' && which !== 'receive') rememberReceiveProgress()
   mode.value = which
   failed.value = ''
   status.value = ''
@@ -312,7 +274,6 @@ async function enter(which) {
   foreignNote.value = ''
   await nextTick()
   resetSession()
-  if (which === 'receive') restoreReceiveProgress()
   /* 掃描頁固定先提示要按哪一顆（匯出那邊由 decimen 自己的狀態列負責） */
   if (which === 'receive') status.value = '按「Start camera」開始掃描對方螢幕上的 QR 動畫'
   await ensureLoaded()
@@ -393,7 +354,6 @@ async function shareForeign() {
 
 /** ✕ 或手機返回：真的收掉面板（歷史記錄由 App 負責，這裡只收拾乾淨） */
 function close() {
-  rememberReceiveProgress()
   resetSession()
   emit('close')
 }
@@ -522,10 +482,7 @@ onMounted(() => {
 watch(
   () => props.open,
   (isOpen) => {
-    if (!isOpen) {
-      rememberReceiveProgress()
-      resetSession()
-    }
+    if (!isOpen) resetSession()
   },
 )
 

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, copyFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, copyFileSync, writeFileSync } from 'node:fs'
 import { extname, join, relative, resolve, sep } from 'node:path'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
@@ -26,6 +26,50 @@ const CONTENT_TYPES = {
   '.json': 'application/json; charset=utf-8',
 }
 
+const RECEIVE_RUNTIME = 'receive-CLE1NPaP.js'
+const RECEIVE_STATE_MARKER = 'let w=null,u=null,we="",K=0,z=0,T=!1,be=!1,re;'
+const RECEIVE_RESET_HOOK = `
+window.__appResetDecimenReceive = () => {
+  T = true
+  z++
+  clearInterval(re)
+  re = void 0
+  M.resize(0)
+  if (w?.getTracks) for (const track of w.getTracks()) track.stop()
+  w = null
+  u = null
+  we = ''
+  K = 0
+  j.length = 0
+  X.length = 0
+  Me.length = 0
+  v.length = 0
+  se = 0
+  Mt = 0
+  xe = Number.POSITIVE_INFINITY
+  Ee = -1
+  ee = 0
+  H = 0
+  te = 0
+  ke = 0
+  Q.armed = false
+  Q.armedAt = 0
+  Q.delayMs = xt
+  Q.visible = false
+  Q.sawFrame = false
+  T = false
+  return !u && !we && !T && M.size === 0 && j.length === 0 && X.length === 0 && v.length === 0
+}
+`
+
+function patchReceiveRuntime(name, source) {
+  if (name !== RECEIVE_RUNTIME) return source
+  if (!source.includes(RECEIVE_STATE_MARKER)) {
+    throw new Error(`無法確認 ${RECEIVE_RUNTIME} 的接收狀態，停止發布以免 QR 傳輸無法重置`)
+  }
+  return `${source}\n${RECEIVE_RESET_HOOK}`
+}
+
 /* 只允許直接躺在 runtime 目錄裡的檔案，避免被 ../ 走出目錄 */
 const runtimeFile = (urlPath) => {
   const name = urlPath.replace(/^\/+/, '')
@@ -35,7 +79,7 @@ const runtimeFile = (urlPath) => {
 }
 
 const readRuntime = (name) => {
-  const text = readFileSync(join(RUNTIME_DIR, name), 'utf8')
+  const text = patchReceiveRuntime(name, readFileSync(join(RUNTIME_DIR, name), 'utf8'))
   return extname(name) === '.css' ? scopeCss(text) : text
 }
 
@@ -64,7 +108,10 @@ function decimenRuntime() {
           const src = join(from, entry.name)
           const dst = join(to, entry.name)
           if (entry.isDirectory()) copyAll(src, dst)
-          else if (extname(entry.name) !== '.css') copyFileSync(src, dst)
+          else if (extname(entry.name) !== '.css') {
+            if (entry.name === RECEIVE_RUNTIME) writeFileSync(dst, patchReceiveRuntime(entry.name, readFileSync(src, 'utf8')))
+            else copyFileSync(src, dst)
+          }
         }
       }
       copyAll(RUNTIME_DIR, resolve('dist', RUNTIME_URL))

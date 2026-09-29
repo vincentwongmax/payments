@@ -1760,7 +1760,8 @@ function onPasteBox(event) {
     event.preventDefault()
     const targetRecord = pasteTargetRecord
     closePasteDialog()
-    requireSelf(() => (targetRecord ? addViewerFiles(targetRecord, files) : addFiles(files)))
+    if (targetRecord) addViewerFiles(targetRecord, files)
+    else requireSelf(() => addFiles(files))
     return
   }
   /* 剪貼簿沒給檔案：等 Safari 把圖插進 DOM，再抓出來（文字一律丟掉） */
@@ -1781,7 +1782,7 @@ function openPasteDialog(message, targetRecord = null) {
 async function pasteImages(targetRecord = null) {
   if (targetRecord?.locked) return
   if (!targetRecord) actionNotice.value = ''
-  requireSelf(async () => {
+  const paste = async () => {
     if (typeof navigator.clipboard?.read !== 'function') {
       openPasteDialog(
         window.isSecureContext
@@ -1816,7 +1817,9 @@ async function pasteImages(targetRecord = null) {
         targetRecord,
       )
     }
-  })
+  }
+  if (targetRecord) paste()
+  else requireSelf(paste)
 }
 
 /* 直接按 Ctrl+V 也能貼上（貼上框自己會處理，不要重複加） */
@@ -4589,9 +4592,11 @@ onUnmounted(() => {
         </p>
 
         <!-- 改名：卡片上的名稱只是顯示，要改從這裡改（鎖定的不能改） -->
-        <label class="field more-rename">
-          <span class="lbl">名稱</span>
+        <div class="field more-rename">
+          <label class="lbl" for="more-record-name">名稱</label>
+          <div class="more-rename-row">
           <input
+            id="more-record-name"
             v-model="moreName"
             class="input"
             maxlength="120"
@@ -4599,8 +4604,6 @@ onUnmounted(() => {
             :disabled="!!moreRecord.locked"
             @keydown.enter.prevent="renameFromMore"
           />
-        </label>
-        <div class="head-actions">
           <button
             type="button"
             class="btn btn-primary"
@@ -4608,8 +4611,9 @@ onUnmounted(() => {
             :aria-disabled="!canRenameFromMore"
             @click="renameFromMore"
           >
-            儲存名稱
+            儲存
           </button>
+          </div>
           <span v-if="moreRecord.locked" class="hint">已鎖定，要改名請先解除鎖定。</span>
           <span v-else-if="!moreName.trim()" class="hint">名稱不能空白。</span>
         </div>
@@ -6083,12 +6087,30 @@ onUnmounted(() => {
 
 /* 「更多」裡的改名欄位 */
 .more-rename {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   margin-top: 12px;
 }
 
 .more-rename .lbl {
   font-size: 12.5px;
   color: var(--muted);
+}
+
+.more-rename-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.more-rename-row .input {
+  min-width: 0;
+}
+
+.more-rename-row .btn {
+  white-space: nowrap;
 }
 
 .more-seq {

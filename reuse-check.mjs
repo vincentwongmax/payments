@@ -157,6 +157,20 @@ for (let i = 0; i < 20; i++) {
 }
 check('第一次掃描：即時診斷有在跑（capture fps 出現數字）', /\d/.test(firstGauges), firstGauges)
 
+const hasResetHook = await evaluate(`(() => {
+  const reset = window.__appResetDecimenReceive
+  if (typeof reset !== 'function') return false
+  window.__appResetCalls = 0
+  window.__appResetResult = false
+  window.__appResetDecimenReceive = () => {
+    window.__appResetCalls++
+    window.__appResetResult = reset()
+    return window.__appResetResult
+  }
+  return true
+})()`)
+check('接收 runtime：提供完整 session 重置入口', hasResetHook === true)
+
 /* 模擬接收中斷時 runtime 留下的進度 DOM */
 await evaluate(`(() => {
   const progress = document.getElementById('progress')
@@ -180,9 +194,21 @@ const closedProgress = j(
     value: document.getElementById('progress').getAttribute('aria-valuenow'),
     width: document.getElementById('bar').style.width,
     label: document.getElementById('progress-label').textContent,
+    resetCalls: window.__appResetCalls,
+    resetOk: window.__appResetResult,
   })`),
 )
-check('關閉之後：收起頁面時先清掉舊 DOM', closedProgress?.progress === 'none' && closedProgress?.status === 'none', JSON.stringify(closedProgress))
+check(
+  '按右上角關閉：runtime session 與進度 DOM 都確實清空',
+  closedProgress?.resetCalls >= 1 &&
+    closedProgress?.resetOk === true &&
+    closedProgress?.progress === 'none' &&
+    closedProgress?.status === 'none' &&
+    closedProgress?.value === '0' &&
+    closedProgress?.width === '' &&
+    closedProgress?.label === '0% · 0 frames',
+  JSON.stringify(closedProgress),
+)
 const gaugesA = await gauges()
 await sleep(4000)
 const gaugesB = await gauges()
@@ -208,23 +234,25 @@ const second = j(
     progressValue: document.getElementById('progress').getAttribute('aria-valuenow'),
     progressWidth: document.getElementById('bar').style.width,
     progressLabel: document.getElementById('progress-label').textContent,
+    resetOk: window.__appResetResult,
     cameraActual: document.getElementById('camera-actual').textContent.trim(),
     cameraOptions: document.getElementById('cfg-camera').options.length,
   })`),
 )
 check(
-  '重新打開：中斷進度恢復，診斷與相機按鈕回到待機',
+  '重新打開：沒有舊進度、診斷數字清空、相機按鈕回到待機',
   second?.open === true &&
     !/\d/.test(second?.gauges ?? 'x') &&
     second?.startText === 'Start camera' &&
     second?.startDisabled === false &&
     second?.hasStream === false &&
     second?.resultLinks === 0 &&
-    second?.progress === 'block' &&
-    second?.progressStatus === 'flex' &&
-    second?.progressValue === '42' &&
-    second?.progressWidth === '42%' &&
-    second?.progressLabel === '42% · interrupted',
+    second?.progress === 'none' &&
+    second?.progressStatus === 'none' &&
+    second?.progressValue === '0' &&
+    second?.progressWidth === '' &&
+    second?.progressLabel === '0% · 0 frames' &&
+    second?.resetOk === true,
   JSON.stringify(second),
 )
 check(
@@ -257,8 +285,8 @@ check(
     secondRun?.progressExists === true &&
     secondRun?.barExists === true &&
     secondRun?.statusExists === true &&
-    secondRun?.progressValue === '42' &&
-    secondRun?.progressWidth === '42%',
+    secondRun?.progressValue === '0' &&
+    secondRun?.progressWidth === '',
   JSON.stringify(secondRun),
 )
 let secondGauges = ''
