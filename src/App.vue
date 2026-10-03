@@ -1754,15 +1754,40 @@ async function harvestPasteBox() {
 }
 
 function onPasteBox(event) {
-  const files = [...(event.clipboardData?.files ?? [])].filter((f) =>
-    f.type?.startsWith('image/'),
-  )
+  const clipboardData = event.clipboardData
+  const files = [...(clipboardData?.files ?? [])]
+  for (const item of clipboardData?.items ?? []) {
+    if (item.kind !== 'file') continue
+    const file = item.getAsFile()
+    if (
+      file &&
+      !files.some(
+        (existing) =>
+          existing.name === file.name &&
+          existing.size === file.size &&
+          existing.type === file.type,
+      )
+    ) {
+      files.push(file)
+    }
+  }
   if (files.length) {
     event.preventDefault()
     const targetRecord = pasteTargetRecord
     closePasteDialog()
-    if (targetRecord) addViewerFiles(targetRecord, files)
-    else requireSelf(() => addFiles(files))
+    if (targetRecord) {
+      addViewerFiles(targetRecord, files).catch((e) => {
+        viewerMsg.value = `貼上圖片失敗：${e?.message ?? e}`
+      })
+    } else {
+      requireSelf(async () => {
+        try {
+          await addFiles(files)
+        } catch (e) {
+          actionNotice.value = `貼上圖片失敗：${e?.message ?? e}`
+        }
+      })
+    }
     return
   }
   /* 剪貼簿沒給檔案：等 Safari 把圖插進 DOM，再抓出來（文字一律丟掉） */
@@ -1810,8 +1835,15 @@ async function pasteImages(targetRecord = null) {
         )
         return
       }
-      if (targetRecord) await addViewerFiles(targetRecord, files)
-      else addFiles(files)
+      if (targetRecord) {
+        await addViewerFiles(targetRecord, files)
+      } else {
+        try {
+          await addFiles(files)
+        } catch (e) {
+          actionNotice.value = `貼上圖片失敗：${e?.message ?? e}`
+        }
+      }
     } catch (e) {
       openPasteDialog(
         `讀不到剪貼簿（${e?.message ?? e}）。\n請長按下面那格，選「貼上」。`,
