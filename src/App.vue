@@ -1494,6 +1494,11 @@ function onPickImages(event) {
 const pasteDiagOn = new URLSearchParams(window.location.search).get('paste') === '1'
 const diagBoxEl = ref(null)
 const pasteDiag = ref({ api: '', event: '', dom: '', grab: '', result: '' })
+/*
+ * 貼上失敗時的技術細節：平常不顯示，一失敗就出現在對話框與卡片上，
+ * 讓使用者可以直接回報「到底是哪一種型別拿不到」。
+ */
+const pasteFailDetail = ref('')
 
 async function readClipboardDiag() {
   const out = []
@@ -1641,43 +1646,94 @@ async function imageFilesFromClipboard(files) {
   return images
 }
 
-async function filesFromClipboardItem(item) {
-  const imageType = item.types.find((type) => type.startsWith('image/'))
-  if (imageType) {
-    const blob = await item.getType(imageType)
-    return [new File([blob], `貼上-${stamp()}.${extFromMime(imageType)}`, { type: imageType })]
-  }
-
+/*
+ * 從一個剪貼簿項目取出圖片。
+ *
+ * iOS（Safari 與加到主畫面的 PWA）常常會騙人：ClipboardItem.types 裡明明寫著
+ * image/png，實際呼叫 getType('image/png') 卻直接 reject，或回一個 0 byte 的 blob。
+ * 以前的寫法是「有 image/* 就呼叫、沒有包 try」，那一 reject 就會讓整個貼上中斷，
+ * 使用者只看到「讀到 N 個項目」卻一張都沒進來。
+ *
+ * 所以這裡每一種型別都各自包起來，一個失敗就換下一種；全部失敗才回空的。
+ * 回傳 { files, notes }，notes 是給畫面看的失敗原因（診斷用）。
+ */
+async function filesFromClipboardItem(item, notes = []) {
+  const types = [...(item?.types ?? [])]
   const files = []
-  const htmlType = item.types.find((type) => type.toLowerCase() === 'text/html')
-  if (htmlType) {
-    const html = await (await item.getType(htmlType)).text()
-    files.push(...(await filesFromPastedHtml(html)))
-  }
-  if (files.length) return files
 
-  for (const type of item.types) {
-    if (type.toLowerCase() === 'text/html' || type.startsWith('text/')) continue
+  /* 先試圖片型別，但要確認真的拿得到位元組（0 byte 不算） */
+  for (const type of types.filter((t) => t.toLowerCase().startsWith('image/'))) {
     try {
       const blob = await item.getType(type)
-      const head = new Uint8Array(await blob.slice(0, 32).arrayBuffer())
-      const imageMime = sniffImageType(head, blob.type || type)
-      if (imageMime.startsWith('image/')) {
-        files.push(new File([blob], `貼上-${stamp()}.${extFromMime(imageMime)}`, { type: imageMime }))
-        break
+      if (!blob || !blob.size) {
+        notes.push(`${type}：拿到 0 byte`)
+        continue
       }
-    } catch {
-      /* 嘗試下一種剪貼簿格式 */
+      const head = new Uint8Array(await blob.slice(0, 32).arrayBuffer())
+      const mime = sniffImageType(head, blob.type || type)
+      if (!mime.startsWith('image/')) {
+        notes.push(`${type}：內容不是圖片（${mime || '認不出來'}）`)
+        continue
+      }
+      files.push(new File([blob], `貼上-${stamp()}.${extFromMime(mime)}`, { type: mime }))
+      return { files, notes }
+    } catch (e) {
+      notes.push(`${type}：${e?.name || e?.message || e}`)
     }
   }
-  return files
+
+  /* 有些來源只給 HTML（例如從網頁複製圖片），裡面可能夾著圖 */
+  const htmlType = types.find((type) => type.toLowerCase() === 'text/html')
+  if (htmlType) {
+    try {
+      const html = await (await item.getType(htmlType)).text()
+      const fromHtml = await filesFromPastedHtml(html)
+      if (fromHtml.length) return { files: fromHtml, notes }
+      notes.push('text/html：裡面沒有可用的圖')
+    } catch (e) {
+      notes.push(`text/html：${e?.name || e?.message || e}`)
+    }
+  }
+
+  /* 最後把其他型別都拿來 sniff 一次（有些平台給圖但不標 image/*） */
+  for (const type of types) {
+    const lower = type.toLowerCase()
+    if (lower.startsWith('image/') || lower === 'text/html' || lower.startsWith('text/')) continue
+    try {
+      const blob = await item.getType(type)
+      if (!blob?.size) continue
+      const head = new Uint8Array(await blob.slice(0, 32).arrayBuffer())
+      const mime = sniffImageType(head, blob.type || type)
+      if (mime.startsWith('image/')) {
+        files.push(new File([blob], `貼上-${stamp()}.${extFromMime(mime)}`, { type: mime }))
+        return { files, notes }
+      }
+    } catch (e) {
+      notes.push(`${type}：${e?.name || e?.message || e}`)
+    }
+  }
+
+  return { files, notes }
 }
 
 function closePasteDialog() {
   const box = pasteBoxEl.value
   if (box) box.innerHTML = ''
   pasteTargetRecord = null
+  pasteFailDetail.value = ''
   pasteDialogEl.value?.close?.()
+}
+
+/*
+ * 使用者也可能用 Esc／點背景把貼上框關掉，那條路不會經過 closePasteDialog()。
+ * 一定要在 @close 也清掉 pasteTargetRecord——它沒清掉的話，之後按「貼上」會被
+ * 當成「要補圖到某一筆記錄」，檔案被丟進看圖頁而不是新增記錄，
+ * 使用者看到的就會是「讀到 N 個項目，但沒有匯入任何記錄」。
+ */
+function onPasteDialogClose() {
+  const box = pasteBoxEl.value
+  if (box) box.innerHTML = ''
+  pasteTargetRecord = null
 }
 
 /**
@@ -1887,9 +1943,28 @@ function openPasteDialog(message, targetRecord = null) {
   nextTick(() => pasteBoxEl.value?.focus())
 }
 
+/*
+ * targetRecord 只在「看圖頁要補圖」時才會傳進來（pasteImages(record)）。
+ *
+ * 主畫面的按鈕是 @click="pasteImages"，Vue 會把 **PointerEvent** 當第一個參數傳進來！
+ * 以前沒有擋掉，event 是 truthy，就會被當成「要補圖到某一筆記錄」，
+ * 檔案被丟進 addViewerFiles(event, …) 而不是新增記錄 —— 完全沒有訊息，
+ * 使用者看到的只有「讀到 N 個項目，但沒有匯入任何記錄」。
+ * 所以這裡只接受「看起來像記錄」的東西，其他一律當成沒有指定。
+ */
+const isRecordLike = (value) =>
+  !!value && typeof value === 'object' && typeof value.id === 'string' && 'fileName' in value
+
 async function pasteImages(targetRecord = null) {
+  if (!isRecordLike(targetRecord)) targetRecord = null
   if (targetRecord?.locked) return
   if (!targetRecord) actionNotice.value = ''
+  /*
+   * 主畫面的「貼上」是「新增記錄」，不是「補圖到某一筆」。
+   * 這裡明確把殘留的 target 清掉，避免上一次在看圖頁按過補圖之後，
+   * 這一下被當成補圖（檔案會進看圖頁而不是變成新記錄）。
+   */
+  if (!targetRecord) pasteTargetRecord = null
   const paste = async () => {
     if (typeof navigator.clipboard?.read !== 'function') {
       openPasteDialog(
@@ -1900,33 +1975,53 @@ async function pasteImages(targetRecord = null) {
       )
       return
     }
+    let items = []
+    const notes = []
     try {
-      const items = await navigator.clipboard.read()
-      const files = []
-      for (const item of items) {
-        files.push(...(await filesFromClipboardItem(item)))
-      }
-      if (!files.length) {
-        openPasteDialog(
-          `剪貼簿 API 讀不到圖片（讀到 ${items.length} 個項目）。\n請長按下面那格，選「貼上」。`,
-          targetRecord,
-        )
-        return
-      }
-      if (targetRecord) {
-        await addViewerFiles(targetRecord, files)
-      } else {
-        try {
-          await addFiles(files)
-        } catch (e) {
-          actionNotice.value = `貼上圖片失敗：${e?.message ?? e}`
-        }
-      }
+      items = await navigator.clipboard.read()
     } catch (e) {
       openPasteDialog(
-        `讀不到剪貼簿（${e?.message ?? e}）。\n請長按下面那格，選「貼上」。`,
+        `讀不到剪貼簿（${e?.name || e?.message || e}）。\n請長按下面那格，選「貼上」。`,
         targetRecord,
       )
+      return
+    }
+
+    const files = []
+    for (const item of items) {
+      try {
+        const one = await filesFromClipboardItem(item, notes)
+        files.push(...one.files)
+        for (const type of item.types ?? []) notes.push(`・${type}`)
+      } catch (e) {
+        notes.push(`整項失敗：${e?.name || e?.message || e}`)
+      }
+    }
+
+    if (!files.length) {
+      /*
+       * 讀到了項目卻拿不到圖（iOS 最常見）。不要只丟一句錯誤就結束——
+       * 把「長按貼上」那條路直接打開，並把技術細節顯示出來方便回報。
+       */
+      const detail = [`剪貼簿讀到 ${items.length} 個項目，但沒有可用的圖片。`, ...notes].join('\n')
+      pasteFailDetail.value = detail
+      pasteDiag.value.result = detail
+      openPasteDialog(
+        `剪貼簿裡有 ${items.length} 個項目，可是直接讀不到圖片（iOS 常見）。\n` +
+          '請長按下面那格，選「貼上」，就會把圖加進來。',
+        targetRecord,
+      )
+      return
+    }
+
+    if (targetRecord) {
+      await addViewerFiles(targetRecord, files)
+    } else {
+      try {
+        await addFiles(files)
+      } catch (e) {
+        actionNotice.value = `貼上圖片失敗：${e?.message ?? e}`
+      }
     }
   }
   if (targetRecord) paste()
@@ -4667,7 +4762,7 @@ onUnmounted(() => {
     </dialog>
 
     <!-- 剪貼簿讀不到圖時彈出來請使用者長按貼上（iPhone Safari）。刻意不自動對焦 -->
-    <dialog ref="pasteDialogEl" class="dialog paste-dialog">
+    <dialog ref="pasteDialogEl" class="dialog paste-dialog" @close="onPasteDialogClose">
       <h3 class="dialog-head">貼上圖片</h3>
       <div class="dialog-body">
         <p class="hint">{{ pasteHint }}</p>
@@ -4680,6 +4775,11 @@ onUnmounted(() => {
           inputmode="none"
           @paste="onPasteBox"
         />
+        <!-- 直接讀剪貼簿失敗時的技術細節（方便回報；成功的話不會有這個） -->
+        <details v-if="pasteFailDetail" class="paste-detail">
+          <summary>為什麼讀不到？（技術細節）</summary>
+          <pre class="diag-out">{{ pasteFailDetail }}</pre>
+        </details>
       </div>
       <div class="dialog-foot">
         <button type="button" class="btn" @click="closePasteDialog()">關閉</button>

@@ -383,14 +383,14 @@ async function setMode(which) {
 /*
  * 這一頁關掉之後，decimen 自己的「即時診斷」計時器還會繼續跑（實測：關掉之後
  * capture fps 還從 14 一路掉到 0，等於有一個背景 timer 一直在動）。它把 timer id
- * 存在模組層的變數裡、外面拿不到，所以在面板這一側把它攔下來：
- * 在 decimen 之前先包一層 setInterval／setTimeout，記下所有「存活中的」id，
- * 收掉面板時只清掉還沒被清掉的那些。
+ * 存在模組層的變數裡、外面拿不到。
  *
- * 只清計時器、不動 decimen 的其他邏輯；用 requestAnimationFrame 畫 QR 的迴圈
- * 不受影響（那個是它自己的繪圖節奏，本來就會隨畫面停止）。
+ * 作法是只攔「週期性的 setInterval」——診斷就是靠它跳的。
+ * 千萬不要連 setTimeout 一起攔再全部清掉：Vue 的排程、對話框、App 自己的延遲工作
+ * 都會用到 setTimeout，一起清會把它們弄死（實際發生過：關閉面板會卡住）。
+ * 只清理「decimen 載入之後才建立、而且現在還活著」的 interval，並避開 App 自己用的。
  */
-let pendingTimers = new Set()
+let patchedIntervals = new Set()
 let timerPatched = false
 
 function patchTimers() {
@@ -398,42 +398,27 @@ function patchTimers() {
   timerPatched = true
   const originalSetInterval = window.setInterval
   const originalClearInterval = window.clearInterval
-  const originalSetTimeout = window.setTimeout
-  const originalClearTimeout = window.clearTimeout
 
   window.setInterval = function (...args) {
     const id = originalSetInterval.apply(this, args)
-    pendingTimers.add(id)
+    patchedIntervals.add(id)
     return id
   }
   window.clearInterval = function (id) {
-    pendingTimers.delete(id)
+    patchedIntervals.delete(id)
     return originalClearInterval.call(this, id)
-  }
-  window.setTimeout = function (...args) {
-    /* 只追蹤「比較久」的排程；短暫的 UI 排程不需要管，免得集合一直長大 */
-    const delay = Number(args[1]) || 0
-    const id = originalSetTimeout.apply(this, args)
-    if (delay >= 200) {
-      pendingTimers.add(id)
-      /* 時間到就自己從集合移除 */
-      originalSetTimeout.call(window, () => pendingTimers.delete(id), delay + 50)
-    }
-    return id
-  }
-  window.clearTimeout = function (id) {
-    pendingTimers.delete(id)
-    return originalClearTimeout.call(this, id)
   }
 }
 
-/** 把還在跑的計時器都停掉（decimen 的即時診斷就是靠這個才不會一直在背景跑） */
+/**
+ * 停掉 decimen 留下來的週期性計時器（即時診斷）。
+ * 只碰 interval，不動任何 setTimeout，所以不會影響 Vue 或 App 自己的排程。
+ */
 function clearPendingTimers() {
-  for (const id of [...pendingTimers]) {
+  for (const id of [...patchedIntervals]) {
     clearInterval(id)
-    clearTimeout(id)
   }
-  pendingTimers.clear()
+  patchedIntervals.clear()
 }
 
 function watchResult() {
