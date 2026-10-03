@@ -1600,6 +1600,27 @@ async function urlToFile(url, name) {
   return new File([buffer], name || `貼上-${stamp()}.${ext}`, { type })
 }
 
+async function filesFromPastedHtml(html) {
+  if (!html) return []
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  const files = []
+  for (const [index, img] of [...doc.querySelectorAll('img')].entries()) {
+    const src = img.getAttribute('src') ?? ''
+    if (!/^(blob:|data:)/i.test(src)) continue
+    try {
+      const file = await urlToFile(src, `貼上-${stamp()}-${index + 1}.png`)
+      const head = new Uint8Array(await file.slice(0, 32).arrayBuffer())
+      const type = sniffImageType(head, file.type)
+      if (type.startsWith('image/')) {
+        files.push(type === file.type ? file : new File([file], file.name, { type }))
+      }
+    } catch {
+      /* 不支援的剪貼簿 HTML 圖片改走輸入框 DOM 擷取 */
+    }
+  }
+  return files
+}
+
 function closePasteDialog() {
   const box = pasteBoxEl.value
   if (box) box.innerHTML = ''
@@ -1715,21 +1736,20 @@ async function extractPastedFiles(box, tag = '貼上', log = null) {
 }
 
 /**
- * 等圖插進來、抓成檔案，成功就加記錄。
- * 不管成功或失敗，貼上完就把「貼上圖片」視窗關掉（不要留著擋畫面），
- * 有問題改成在頁面上方提示。
+ * 等圖插進來、抓成檔案；取不到時保留視窗，讓使用者可以重試。
  */
-async function harvestPasteBox() {
+async function harvestPasteBox(html = '') {
   const box = pasteBoxEl.value
   if (!box) return 0
   const targetRecord = pasteTargetRecord
-  await waitForPastedImages(box)
-  const files = await extractPastedFiles(box, '貼上')
+  let files = await filesFromPastedHtml(html)
   if (!files.length) {
-    closePasteDialog()
-    const message = '這次貼上的內容裡沒有可用的圖片。\n請再試一次，或改用「上傳圖片」從相簿選圖。'
-    if (targetRecord) viewerMsg.value = message
-    else backupNotice.value = message
+    await waitForPastedImages(box)
+    files = await extractPastedFiles(box, '貼上')
+  }
+  if (!files.length) {
+    pasteHint.value =
+      '目前沒有抓到圖片，貼上視窗仍保持開啟。請再長按輸入框選「貼上」，或改用上傳圖片。'
     return 0
   }
   try {
@@ -1745,10 +1765,7 @@ async function harvestPasteBox() {
     }
     return added
   } catch (e) {
-    closePasteDialog()
-    const message = `貼上圖片失敗：${e?.message ?? e}\n請再試一次，或改用「上傳圖片」。`
-    if (targetRecord) viewerMsg.value = message
-    else backupNotice.value = message
+    pasteHint.value = `貼上圖片失敗：${e?.message ?? e}\n視窗仍保持開啟，可以重試或改用上傳圖片。`
     return 0
   }
 }
@@ -1791,7 +1808,7 @@ function onPasteBox(event) {
     return
   }
   /* 剪貼簿沒給檔案：等 Safari 把圖插進 DOM，再抓出來（文字一律丟掉） */
-  harvestPasteBox()
+  harvestPasteBox(clipboardData?.getData?.('text/html') ?? '')
 }
 
 /**
@@ -1823,10 +1840,17 @@ async function pasteImages(targetRecord = null) {
       const files = []
       for (const item of items) {
         const type = item.types.find((t) => t.startsWith('image/'))
-        if (!type) continue
-        const blob = await item.getType(type)
-        const ext = type.split('/')[1] ?? 'png'
-        files.push(new File([blob], `貼上-${stamp()}.${ext}`, { type }))
+        if (type) {
+          const blob = await item.getType(type)
+          const ext = type.split('/')[1] ?? 'png'
+          files.push(new File([blob], `貼上-${stamp()}.${ext}`, { type }))
+          continue
+        }
+        const htmlType = item.types.find((t) => t.toLowerCase() === 'text/html')
+        if (htmlType) {
+          const html = await (await item.getType(htmlType)).text()
+          files.push(...(await filesFromPastedHtml(html)))
+        }
       }
       if (!files.length) {
         openPasteDialog(
