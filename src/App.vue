@@ -1606,16 +1606,68 @@ async function filesFromPastedHtml(html) {
   const files = []
   for (const [index, img] of [...doc.querySelectorAll('img')].entries()) {
     const src = img.getAttribute('src') ?? ''
-    if (!/^(blob:|data:)/i.test(src)) continue
+    if (!/^(blob:|data:|https?:)/i.test(src)) continue
     try {
       const file = await urlToFile(src, `貼上-${stamp()}-${index + 1}.png`)
       const head = new Uint8Array(await file.slice(0, 32).arrayBuffer())
       const type = sniffImageType(head, file.type)
       if (type.startsWith('image/')) {
-        files.push(type === file.type ? file : new File([file], file.name, { type }))
+        files.push(new File([file], `貼上-${stamp()}-${index + 1}.${extFromMime(type)}`, { type }))
       }
     } catch {
       /* 不支援的剪貼簿 HTML 圖片改走輸入框 DOM 擷取 */
+    }
+  }
+  return files
+}
+
+async function imageFilesFromClipboard(files) {
+  const images = []
+  for (const file of files) {
+    try {
+      const head = new Uint8Array(await file.slice(0, 32).arrayBuffer())
+      const type = sniffImageType(head, file.type)
+      if (type.startsWith('image/')) {
+        images.push(
+          file.type === type
+            ? file
+            : new File([file], file.name || `貼上-${stamp()}.${extFromMime(type)}`, { type }),
+        )
+      }
+    } catch {
+      /* 忽略非圖片剪貼簿項目 */
+    }
+  }
+  return images
+}
+
+async function filesFromClipboardItem(item) {
+  const imageType = item.types.find((type) => type.startsWith('image/'))
+  if (imageType) {
+    const blob = await item.getType(imageType)
+    return [new File([blob], `貼上-${stamp()}.${extFromMime(imageType)}`, { type: imageType })]
+  }
+
+  const files = []
+  const htmlType = item.types.find((type) => type.toLowerCase() === 'text/html')
+  if (htmlType) {
+    const html = await (await item.getType(htmlType)).text()
+    files.push(...(await filesFromPastedHtml(html)))
+  }
+  if (files.length) return files
+
+  for (const type of item.types) {
+    if (type.toLowerCase() === 'text/html' || type.startsWith('text/')) continue
+    try {
+      const blob = await item.getType(type)
+      const head = new Uint8Array(await blob.slice(0, 32).arrayBuffer())
+      const imageMime = sniffImageType(head, blob.type || type)
+      if (imageMime.startsWith('image/')) {
+        files.push(new File([blob], `貼上-${stamp()}.${extFromMime(imageMime)}`, { type: imageMime }))
+        break
+      }
+    } catch {
+      /* 嘗試下一種剪貼簿格式 */
     }
   }
   return files
@@ -1770,6 +1822,23 @@ async function harvestPasteBox(html = '') {
   }
 }
 
+function addPastedFiles(files, targetRecord) {
+  closePasteDialog()
+  if (targetRecord) {
+    addViewerFiles(targetRecord, files).catch((e) => {
+      viewerMsg.value = `貼上圖片失敗：${e?.message ?? e}`
+    })
+  } else {
+    requireSelf(async () => {
+      try {
+        await addFiles(files)
+      } catch (e) {
+        actionNotice.value = `貼上圖片失敗：${e?.message ?? e}`
+      }
+    })
+  }
+}
+
 function onPasteBox(event) {
   const clipboardData = event.clipboardData
   const files = [...(clipboardData?.files ?? [])]
@@ -1788,27 +1857,23 @@ function onPasteBox(event) {
       files.push(file)
     }
   }
-  if (files.length) {
+  const targetRecord = pasteTargetRecord
+  const html = clipboardData?.getData?.('text/html') ?? ''
+  const typedImages = files.filter((file) => file.type?.startsWith('image/'))
+  if (typedImages.length) {
     event.preventDefault()
-    const targetRecord = pasteTargetRecord
-    closePasteDialog()
-    if (targetRecord) {
-      addViewerFiles(targetRecord, files).catch((e) => {
-        viewerMsg.value = `貼上圖片失敗：${e?.message ?? e}`
-      })
-    } else {
-      requireSelf(async () => {
-        try {
-          await addFiles(files)
-        } catch (e) {
-          actionNotice.value = `貼上圖片失敗：${e?.message ?? e}`
-        }
-      })
-    }
+    addPastedFiles(typedImages, targetRecord)
     return
   }
-  /* 剪貼簿沒給檔案：等 Safari 把圖插進 DOM，再抓出來（文字一律丟掉） */
-  harvestPasteBox(clipboardData?.getData?.('text/html') ?? '')
+  if (files.length) {
+    imageFilesFromClipboard(files).then((images) => {
+      if (images.length) addPastedFiles(images, targetRecord)
+      else harvestPasteBox(html)
+    })
+    return
+  }
+  /* 剪貼簿沒給圖片檔案：解析 HTML，再等 Safari 把圖插進 DOM */
+  harvestPasteBox(html)
 }
 
 /**
@@ -1839,18 +1904,7 @@ async function pasteImages(targetRecord = null) {
       const items = await navigator.clipboard.read()
       const files = []
       for (const item of items) {
-        const type = item.types.find((t) => t.startsWith('image/'))
-        if (type) {
-          const blob = await item.getType(type)
-          const ext = type.split('/')[1] ?? 'png'
-          files.push(new File([blob], `貼上-${stamp()}.${ext}`, { type }))
-          continue
-        }
-        const htmlType = item.types.find((t) => t.toLowerCase() === 'text/html')
-        if (htmlType) {
-          const html = await (await item.getType(htmlType)).text()
-          files.push(...(await filesFromPastedHtml(html)))
-        }
+        files.push(...(await filesFromClipboardItem(item)))
       }
       if (!files.length) {
         openPasteDialog(
